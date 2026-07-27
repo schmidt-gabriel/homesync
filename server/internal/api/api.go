@@ -59,6 +59,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /v1/files/{path...}", s.requireAuth(s.handleDeleteFile))
 
 	s.mux.HandleFunc("PUT /v1/dirs/{path...}", s.requireAuth(s.handlePutDir))
+	// Same handler as files: it already branches on the entry type. Exposed
+	// here too so directories are removed through the endpoint that creates
+	// them, rather than the contract having an asymmetry to explain.
+	s.mux.HandleFunc("DELETE /v1/dirs/{path...}", s.requireAuth(s.handleDeleteFile))
 
 	s.mux.HandleFunc("GET /v1/ignore", s.requireAuth(s.handleGetIgnore))
 	s.mux.HandleFunc("PUT /v1/ignore", s.requireAuth(s.handlePutIgnore))
