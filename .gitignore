@@ -1,0 +1,13 @@
+# Local runtime state
+/data/
+/config/
+.env
+
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+.build/

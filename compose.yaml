@@ -1,0 +1,26 @@
+# Everything needed to run HomeSync locally: clone the repo and `docker compose
+# up`. The bind mounts are relative, so no host path has to be prepared first.
+services:
+  homesync:
+    build: ./server
+    container_name: homesync
+    ports:
+      - "${HOMESYNC_PORT:-8420}:8080"
+    volumes:
+      - ${HOMESYNC_DATA:-./data}:/data
+      - ${HOMESYNC_CONFIG:-./config}:/config
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - TRASH_DAYS=${TRASH_DAYS:-30}
+      - TOMBSTONE_DAYS=${TOMBSTONE_DAYS:-90}
+      - RESCAN_INTERVAL=${RESCAN_INTERVAL:-15m}
+      # Set this to enable the web admin UI at http://localhost:8420/
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

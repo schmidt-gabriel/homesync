@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HomeSync</title>
+<style>
+  :root {
+    --bg: #fbfbfa;        --panel: #fff;      --border: #e4e2dd;
+    --text: #1c1b19;      --muted: #75716a;   --accent: #2f6f4f;
+    --accent-soft: #eaf3ee;
+    --danger: #a33a2c;    --danger-soft: #fbeeec;
+    --warn: #8a6a1f;      --warn-soft: #fdf6e3;
+    --radius: 10px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181a;      --panel: #1e2124;   --border: #30353a;
+      --text: #e9e7e3;    --muted: #9aa0a6;   --accent: #6fbf90;
+      --accent-soft: #1c2b23;
+      --danger: #e08374;  --danger-soft: #2c1e1c;
+      --warn: #d9b45f;    --warn-soft: #2a2418;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  header .rev { font: 12px var(--mono); color: var(--muted); }
+  header .spacer { flex: 1; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px; }
+  nav { display: flex; gap: 4px; margin-bottom: 20px; flex-wrap: wrap; }
+  nav button {
+    background: none; border: 1px solid transparent; color: var(--muted);
+    padding: 6px 12px; border-radius: 999px; cursor: pointer; font-size: 14px;
+  }
+  nav button:hover { color: var(--text); }
+  nav button[aria-selected="true"] {
+    background: var(--accent-soft); color: var(--accent); border-color: var(--border);
+    font-weight: 600;
+  }
+  section[hidden] { display: none; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px;
+  }
+  .card .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .card .value { font-size: 24px; font-weight: 600; margin-top: 2px; letter-spacing: -0.02em; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px; margin-top: 16px;
+  }
+  .panel h2 { font-size: 14px; margin: 0 0 12px; font-weight: 650; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--border); }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  tr:last-child td { border-bottom: none; }
+  td.path { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .table-scroll { overflow-x: auto; }
+  button.action {
+    background: var(--accent); color: #fff; border: none; border-radius: 7px;
+    padding: 7px 14px; font-size: 14px; font-weight: 550; cursor: pointer;
+  }
+  button.action:hover { filter: brightness(1.08); }
+  button.ghost {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 7px; padding: 5px 11px; font-size: 13px; cursor: pointer;
+  }
+  button.ghost:hover { color: var(--text); }
+  button.ghost.danger { color: var(--danger); border-color: var(--danger); }
+  input[type=text], input[type=password], textarea {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 11px; font-size: 14px; font-family: inherit; width: 100%;
+  }
+  textarea { font-family: var(--mono); font-size: 13px; min-height: 260px; resize: vertical; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .token {
+    font-family: var(--mono); font-size: 13px; background: var(--accent-soft);
+    border: 1px solid var(--accent); border-radius: 7px; padding: 12px;
+    word-break: break-all; margin-top: 8px;
+  }
+  .notice { border-radius: 7px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+  .notice.warn { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); }
+  .notice.error { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
+  .crumbs { font-family: var(--mono); font-size: 13px; margin-bottom: 10px; }
+  .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .crumbs a:hover { text-decoration: underline; }
+  .login { max-width: 340px; margin: 15vh auto; }
+  .login .panel { margin-top: 0; }
+  .empty { color: var(--muted); font-size: 14px; padding: 16px 4px; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 6px; }
+  .dot.off { background: var(--muted); }
+  .dot.bad { background: var(--danger); }
+</style>
+</head>
+<body>
+
+<div id="login" class="login" hidden>
+  <div class="panel">
+    <h2>HomeSync</h2>
+    <p class="muted" style="margin-top:0">Enter the admin password to manage this server.</p>
+    <div id="login-error" class="notice error" hidden></div>
+    <form id="login-form">
+      <input type="password" id="password" placeholder="Admin password" autocomplete="current-password" required>
+      <button class="action" type="submit" style="margin-top:10px; width:100%">Sign in</button>
+    </form>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>HomeSync</h1>
+    <span class="rev" id="rev-badge"></span>
+    <span class="spacer"></span>
+    <button class="ghost" id="refresh">Refresh</button>
+    <button class="ghost" id="logout">Sign out</button>
+  </header>
+
+  <main>
+    <div id="insecure" class="notice warn" hidden>
+      Served over plain HTTP — device tokens and this password travel in the clear.
+      Fine on a trusted network; set <code>TLS_CERT</code> and <code>TLS_KEY</code> for anything else.
+    </div>
+
+    <nav>
+      <button data-tab="overview" aria-selected="true">Overview</button>
+      <button data-tab="devices" aria-selected="false">Devices</button>
+      <button data-tab="files" aria-selected="false">Files</button>
+      <button data-tab="trash" aria-selected="false">Trash</button>
+      <button data-tab="ignore" aria-selected="false">Ignore rules</button>
+    </nav>
+
+    <section id="tab-overview">
+      <div class="cards" id="overview-cards"></div>
+      <div class="panel">
+        <h2>Server</h2>
+        <table><tbody id="overview-details"></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-devices" hidden>
+      <div class="panel">
+        <h2>Add a device</h2>
+        <form id="device-form" class="row">
+          <input type="text" id="device-name" placeholder="e.g. MacBook Pro" style="flex:1; min-width:180px" required>
+          <button class="action" type="submit">Create</button>
+        </form>
+        <div id="new-token" hidden>
+          <p class="muted" style="margin-bottom:0">
+            Copy this token into the app now — only its hash is stored, so it cannot be shown again.
+          </p>
+          <div class="token" id="token-value"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Registered devices</h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Name</th><th>Last seen</th><th>Added</th><th></th></tr></thead>
+            <tbody id="device-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-files" hidden>
+      <div class="panel">
+        <div class="crumbs" id="crumbs"></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Name</th><th class="num">Size</th><th class="num">Rev</th><th>Modified</th></tr></thead>
+            <tbody id="file-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-trash" hidden>
+      <div class="panel">
+        <h2>Deleted and overwritten content</h2>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Original path</th><th class="num">Size</th><th>Discarded</th><th></th></tr></thead>
+            <tbody id="trash-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-ignore" hidden>
+      <div class="panel">
+        <h2>Shared ignore rules</h2>
+        <p class="muted" style="margin-top:0">
+          These apply to every machine. One glob per line; blank lines and <code>#</code> comments are skipped.
+        </p>
+        <textarea id="ignore-text" spellcheck="false"></textarea>
+        <div class="row" style="margin-top:10px">
+          <button class="action" id="save-ignore">Save</button>
+          <span class="muted" id="ignore-status"></span>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  if (res.status === 401) { showLogin(); throw new Error("unauthorized"); }
+  const body = res.status === 204 ? null : await res.json().catch(() => null);
+  if (!res.ok) throw new Error(body?.message || `request failed (${res.status})`);
+  return body;
+}
+
+function formatBytes(n) {
+  if (n === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
+  const value = n / Math.pow(1024, i);
+  return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
+function formatTime(ms) {
+  if (!ms) return "never";
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} min ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} h ago`;
+  return new Date(ms).toLocaleString();
+}
+
+// Everything from the server is rendered as text, never as markup: a filename
+// is attacker-controlled input as far as this page is concerned.
+function cell(text, className) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (className) td.className = className;
+  return td;
+}
+
+function showLogin() {
+  $("app").hidden = true;
+  $("login").hidden = false;
+  $("password").focus();
+}
+
+function showApp() {
+  $("login").hidden = true;
+  $("app").hidden = false;
+  refresh();
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+
+const loaders = {};
+let activeTab = "overview";
+
+document.querySelectorAll("nav button").forEach((button) => {
+  button.addEventListener("click", () => {
+    activeTab = button.dataset.tab;
+    document.querySelectorAll("nav button").forEach((b) =>
+      b.setAttribute("aria-selected", String(b === button)));
+    document.querySelectorAll("main section").forEach((s) =>
+      s.hidden = s.id !== `tab-${activeTab}`);
+    loaders[activeTab]?.();
+  });
+});
+
+function refresh() {
+  loadOverview();
+  loaders[activeTab]?.();
+}
+
+// ── Overview ─────────────────────────────────────────────────────────────────
+
+async function loadOverview() {
+  const data = await api("/admin/api/overview");
+
+  $("rev-badge").textContent = `rev ${data.stats.current_rev}`;
+  $("insecure").hidden = data.secure;
+
+  const cards = [
+    ["Files", data.stats.files.toLocaleString()],
+    ["Total size", formatBytes(data.stats.total_size)],
+    ["Directories", data.stats.dirs.toLocaleString()],
+    ["Devices", String(data.devices)],
+    ["Trash", `${data.trash_items} · ${formatBytes(data.trash_size)}`],
+  ];
+  const cardHost = $("overview-cards");
+  cardHost.replaceChildren();
+  for (const [label, value] of cards) {
+    const div = document.createElement("div");
+    div.className = "card";
+    const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+    const v = document.createElement("div"); v.className = "value"; v.textContent = value;
+    div.append(l, v);
+    cardHost.append(div);
+  }
+
+  const details = [
+    ["Data directory", data.data_dir],
+    ["Current revision", String(data.stats.current_rev)],
+    ["Delete markers", `${data.stats.tombstones} (pruned after 90 days)`],
+    ["Last full scan", `${formatTime(data.last_scan_at)}${data.last_scan_info ? ` · ${data.last_scan_info}` : ""}`],
+    ["Transport", data.secure ? "HTTPS" : "plain HTTP"],
+  ];
+  const detailHost = $("overview-details");
+  detailHost.replaceChildren();
+  for (const [label, value] of details) {
+    const tr = document.createElement("tr");
+    tr.append(cell(label), cell(value, "path"));
+    detailHost.append(tr);
+  }
+}
+loaders.overview = loadOverview;
+
+// ── Devices ──────────────────────────────────────────────────────────────────
+
+async function loadDevices() {
+  const { devices } = await api("/admin/api/devices");
+  const host = $("device-rows");
+  host.replaceChildren();
+
+  if (devices.length === 0) {
+    const tr = document.createElement("tr");
+    const td = cell("No devices yet. Create one above, then paste its token into the app.", "empty");
+    td.colSpan = 4;
+    tr.append(td);
+    host.append(tr);
+    return;
+  }
+
+  for (const device of devices) {
+    const tr = document.createElement("tr");
+
+    const nameCell = document.createElement("td");
+    const dot = document.createElement("span");
+    // "Recently seen" is within an hour; the clients poll far more often.
+    dot.className = "dot" + (Date.now() - device.last_seen < 3_600_000 ? "" : " off");
+    nameCell.append(dot, document.createTextNode(device.name));
+
+    const actionCell = document.createElement("td");
+    const revoke = document.createElement("button");
+    revoke.className = "ghost danger";
+    revoke.textContent = "Revoke";
+    revoke.addEventListener("click", async () => {
+      if (!confirm(`Revoke "${device.name}"? That machine stops syncing immediately.`)) return;
+      await api(`/admin/api/devices/${encodeURIComponent(device.name)}`, { method: "DELETE" });
+      loadDevices();
+    });
+    actionCell.append(revoke);
+
+    tr.append(nameCell, cell(formatTime(device.last_seen)), cell(formatTime(device.created_at)), actionCell);
+    host.append(tr);
+  }
+}
+loaders.devices = loadDevices;
+
+$("device-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = $("device-name").value.trim();
+  if (!name) return;
+
+  const result = await api("/admin/api/devices", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+
+  $("token-value").textContent = result.token;
+  $("new-token").hidden = false;
+  $("device-name").value = "";
+  loadDevices();
+});
+
+// ── Files ────────────────────────────────────────────────────────────────────
+
+let prefix = "";
+
+async function loadFiles() {
+  const data = await api(`/admin/api/files?prefix=${encodeURIComponent(prefix)}`);
+
+  const crumbs = $("crumbs");
+  crumbs.replaceChildren();
+  const rootLink = document.createElement("a");
+  rootLink.textContent = "/";
+  rootLink.addEventListener("click", () => { prefix = ""; loadFiles(); });
+  crumbs.append(rootLink);
+
+  let walked = "";
+  for (const part of prefix ? prefix.split("/") : []) {
+    walked = walked ? `${walked}/${part}` : part;
+    const target = walked;
+    crumbs.append(document.createTextNode(" "));
+    const link = document.createElement("a");
+    link.textContent = part;
+    link.addEventListener("click", () => { prefix = target; loadFiles(); });
+    crumbs.append(link, document.createTextNode(" /"));
+  }
+
+  const host = $("file-rows");
+  host.replaceChildren();
+
+  if (data.entries.length === 0) {
+    const tr = document.createElement("tr");
+    const td = cell("Empty.", "empty");
+    td.colSpan = 4;
+    tr.append(td);
+    host.append(tr);
+    return;
+  }
+
+  for (const entry of data.entries) {
+    const tr = document.createElement("tr");
+    const name = entry.path.split("/").pop();
+
+    const nameCell = document.createElement("td");
+    nameCell.className = "path";
+    if (!entry.on_disk) {
+      // Indexed but absent from disk: the clearest early sign the volume is
+      // not where the server thinks it is.
+      const dot = document.createElement("span");
+      dot.className = "dot bad";
+      dot.title = "Indexed but missing on disk";
+      nameCell.append(dot);
+    }
+    if (entry.type === "dir") {
+      const link = document.createElement("a");
+      link.style.cursor = "pointer";
+      link.style.color = "var(--accent)";
+      link.textContent = `${name}/`;
+      link.addEventListener("click", () => { prefix = entry.path; loadFiles(); });
+      nameCell.append(link);
+    } else {
+      nameCell.append(document.createTextNode(name));
+    }
+
+    tr.append(
+      nameCell,
+      cell(entry.type === "dir" ? "—" : formatBytes(entry.size), "num"),
+      cell(String(entry.rev), "num"),
+      cell(formatTime(entry.mtime)),
+    );
+    host.append(tr);
+  }
+}
+loaders.files = loadFiles;
+
+// ── Trash ────────────────────────────────────────────────────────────────────
+
+async function loadTrash() {
+  const { items } = await api("/admin/api/trash");
+  const host = $("trash-rows");
+  host.replaceChildren();
+
+  if (items.length === 0) {
+    const tr = document.createElement("tr");
+    const td = cell("Nothing here.", "empty");
+    td.colSpan = 4;
+    tr.append(td);
+    host.append(tr);
+    return;
+  }
+
+  for (const item of items) {
+    const tr = document.createElement("tr");
+
+    const actionCell = document.createElement("td");
+    const restore = document.createElement("button");
+    restore.className = "ghost";
+    restore.textContent = "Restore";
+    restore.addEventListener("click", async () => {
+      try {
+        await api("/admin/api/trash/restore", {
+          method: "POST",
+          body: JSON.stringify({ id: item.id }),
+        });
+        loadTrash();
+        loadOverview();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    actionCell.append(restore);
+
+    tr.append(
+      cell(item.path, "path"),
+      cell(formatBytes(item.size), "num"),
+      cell(new Date(item.deleted_at).toLocaleString()),
+      actionCell,
+    );
+    host.append(tr);
+  }
+}
+loaders.trash = loadTrash;
+
+// ── Ignore rules ─────────────────────────────────────────────────────────────
+
+async function loadIgnore() {
+  const data = await api("/admin/api/ignore");
+  $("ignore-text").value = data.rules;
+  $("ignore-status").textContent = data.version ? `saved ${formatTime(data.version)}` : "using defaults";
+}
+loaders.ignore = loadIgnore;
+
+$("save-ignore").addEventListener("click", async () => {
+  await api("/admin/api/ignore", {
+    method: "PUT",
+    body: JSON.stringify({ rules: $("ignore-text").value }),
+  });
+  $("ignore-status").textContent = "saved just now";
+});
+
+// ── Session ──────────────────────────────────────────────────────────────────
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const error = $("login-error");
+  error.hidden = true;
+  try {
+    await api("/admin/api/login", {
+      method: "POST",
+      body: JSON.stringify({ password: $("password").value }),
+    });
+    $("password").value = "";
+    showApp();
+  } catch (err) {
+    error.textContent = err.message;
+    error.hidden = false;
+  }
+});
+
+$("logout").addEventListener("click", async () => {
+  await api("/admin/api/logout", { method: "POST" });
+  showLogin();
+});
+
+$("refresh").addEventListener("click", refresh);
+
+(async function start() {
+  const { authenticated } = await api("/admin/api/session");
+  authenticated ? showApp() : showLogin();
+})();
+</script>
+</body>
+</html>
