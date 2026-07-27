@@ -11,3 +11,6 @@ xcuserdata/
 *.xcuserstate
 DerivedData/
 .build/
+
+# Swift package build products
+clients/mac/HomeSyncKit/.build/

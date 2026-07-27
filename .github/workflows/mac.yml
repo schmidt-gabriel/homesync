@@ -35,9 +35,58 @@ jobs:
       # This is where the real coverage lives. The engine is a plain Swift
       # package with no UI and no bundle, so it tests without Xcode, without
       # signing, and in seconds.
-      - name: Unit tests
+      #
+      # Without a server the engine's integration tests skip themselves, so one
+      # is started for them. Docker is not available on the macOS runners, but
+      # it is not needed: the server is a Go binary and the runner has Go.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: server/go.sum
+
+      - name: Start a server
+        run: |
+          go build -o /tmp/homesync ./cmd/homesync
+          export DATA_DIR=/tmp/homesync-data CONFIG_DIR=/tmp/homesync-config
+          TOKEN=$(/tmp/homesync device add ci | grep -oE '[A-Za-z0-9_-]{43}')
+          LISTEN_ADDR=127.0.0.1:8420 /tmp/homesync serve &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8420/healthz >/dev/null && break
+            sleep 1
+          done
+          echo "::add-mask::$TOKEN"
+          echo "HOMESYNC_TEST_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "HOMESYNC_TEST_URL=http://127.0.0.1:8420" >> "$GITHUB_ENV"
+        working-directory: server
+
+      - name: Unit and integration tests
         working-directory: clients/mac/HomeSyncKit
         run: swift test
+
+  conformance:
+    name: Client conformance
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: conformance/go.sum
+
+      # Proves the engine against the same contract any other client would have
+      # to meet, driving the headless CLI end to end: real FSEvents, a real
+      # event stream, a real server. The harness builds and launches the server
+      # itself, so this needs no Docker.
+      - name: Build the headless client
+        working-directory: clients/mac/HomeSyncKit
+        run: swift build -c release --product homesync-cli
+
+      - name: Run the client conformance suite
+        working-directory: conformance
+        run: |
+          BIN="$GITHUB_WORKSPACE/clients/mac/HomeSyncKit/.build/release/homesync-cli"
+          HOMESYNC_CLIENT_CMD="$BIN" go test -v -run TestClientConformance ./...
 
   app:
     name: Build the app
