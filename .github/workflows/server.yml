@@ -1,0 +1,117 @@
+name: Server
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: |
+            server/go.sum
+            conformance/go.sum
+
+      - name: Check formatting
+        working-directory: server
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        working-directory: server
+        run: go vet ./...
+
+      # -race matters here: the index is written by HTTP handlers, the
+      # filesystem watcher and the janitor at the same time.
+      - name: Unit tests
+        working-directory: server
+        run: go test -race ./...
+
+      # Runs the suite against a server it builds and launches itself, which is
+      # the mode a contributor gets from a bare `go test ./...`.
+      - name: Conformance (local build)
+        working-directory: conformance
+        run: go test -v ./...
+
+  container:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: conformance/go.sum
+
+      - name: Build the image
+        run: docker compose build
+
+      # Docker creates a missing bind-mount source as root, but the container
+      # runs unprivileged as uid 1000, so it would be unable to write. Creating
+      # the directories up front avoids that.
+      - name: Prepare the volumes
+        run: |
+          mkdir -p data config
+          chmod 777 data config
+
+      - name: Start the server
+        run: |
+          docker compose up -d
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8420/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server never became healthy"
+          docker compose logs
+          exit 1
+
+      - name: Register a device
+        run: |
+          TOKEN=$(docker compose exec -T homesync homesync device add ci \
+            | grep -oE '[A-Za-z0-9_-]{43}')
+          if [ -z "$TOKEN" ]; then
+            echo "could not register a device"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "HOMESYNC_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      # The same suite, now pointed at the artifact that would actually be
+      # deployed rather than at a freshly compiled binary. HOMESYNC_DATA_DIR
+      # lets it also verify that writes made straight into the volume are
+      # picked up; without it those checks skip instead of silently passing.
+      - name: Conformance (built image)
+        working-directory: conformance
+        env:
+          HOMESYNC_URL: http://localhost:8420
+          HOMESYNC_DATA_DIR: ${{ github.workspace }}/data
+        run: go test -v ./...
+
+      - name: Server logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop the server
+        if: always()
+        run: docker compose down -v

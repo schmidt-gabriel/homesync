@@ -1,0 +1,87 @@
+name: macOS client
+
+# Path-gated, so this stays dormant until the client exists rather than
+# failing on every push in the meantime.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clients/mac/**'
+      - '.github/workflows/mac.yml'
+  pull_request:
+    paths:
+      - 'clients/mac/**'
+      - '.github/workflows/mac.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test the sync engine
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Recorded on every run: when a build starts behaving differently, the
+      # toolchain version is the first thing worth knowing.
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # This is where the real coverage lives. The engine is a plain Swift
+      # package with no UI and no bundle, so it tests without Xcode, without
+      # signing, and in seconds.
+      - name: Unit tests
+        working-directory: clients/mac/HomeSyncKit
+        run: swift test
+
+  app:
+    name: Build the app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: clients/mac
+        # CODE_SIGNING_ALLOWED=NO because the runner holds no Developer ID
+        # certificate. The artifact is therefore unsigned: see the note below.
+        run: |
+          xcodebuild \
+            -project HomeSync.xcodeproj \
+            -scheme HomeSync \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package
+        working-directory: clients/mac
+        run: |
+          APP=build/Build/Products/Release/HomeSync.app
+          if [ ! -d "$APP" ]; then
+            echo "no app bundle at $APP"
+            exit 1
+          fi
+          # ditto rather than zip: it preserves the bundle's symlinks and
+          # resource forks, which a plain zip mangles.
+          ditto -c -k --sequesterRsrc --keepParent "$APP" HomeSync.zip
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: HomeSync-app
+          path: clients/mac/HomeSync.zip
+          if-no-files-found: error
+
+  # The artifact this workflow produces is unsigned and unnotarised, so macOS
+  # quarantines it on download and Gatekeeper refuses to open it. To run it:
+  #
+  #   xattr -dr com.apple.quarantine HomeSync.app
+  #
+  # Signing it properly needs a paid Apple Developer account. When there is
+  # one, the certificate and notarisation credentials go in as secrets and a
+  # signing step slots in before Package; nothing else here has to change.
