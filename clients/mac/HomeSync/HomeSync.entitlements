@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Sandbox is deliberately off.
+
+	     With it on, the app only sees its own container. Reading and writing
+	     freely inside ~/Library/CloudStorage/HomeSync would need
+	     security-scoped bookmarks: the user picks the folder in an NSOpenPanel
+	     and the app stores a token to reopen it later. That is real work, and
+	     it buys nothing for an app you build and install on your own machines.
+
+	     It would become mandatory for the Mac App Store. Nothing else here
+	     depends on the choice, so turning it on later is a contained change. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

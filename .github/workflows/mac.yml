@@ -119,6 +119,18 @@ jobs:
           # resource forks, which a plain zip mangles.
           ditto -c -k --sequesterRsrc --keepParent "$APP" HomeSync.zip
 
+      # Before uploading, so a broken bundle is never published as if it were
+      # good. ditto to unpack, matching how it was packed.
+      - name: Verify the artifact
+        working-directory: clients/mac
+        run: |
+          rm -rf verify && mkdir verify
+          ditto -x -k HomeSync.zip verify
+          test -x verify/HomeSync.app/Contents/MacOS/HomeSync
+          # A menu bar app that lost LSUIElement would come back with a Dock
+          # icon and a stray window, which is a silent regression otherwise.
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' verify/HomeSync.app/Contents/Info.plist)" = "true"
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
