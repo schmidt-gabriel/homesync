@@ -1,9 +1,23 @@
 name: Server
 
+# Scoped to what this workflow actually validates, so a change to the Mac
+# client does not spend runner time rebuilding a container that cannot have
+# been affected. conformance/ is included because it is what proves the
+# server, and compose.yaml because the container job runs it.
 on:
   push:
     branches: [main]
+    paths:
+      - 'server/**'
+      - 'conformance/**'
+      - 'compose.yaml'
+      - '.github/workflows/server.yml'
   pull_request:
+    paths:
+      - 'server/**'
+      - 'conformance/**'
+      - 'compose.yaml'
+      - '.github/workflows/server.yml'
   workflow_dispatch:
 
 # A new push to the same branch makes the previous run irrelevant.

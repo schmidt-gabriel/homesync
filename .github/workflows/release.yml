@@ -1,0 +1,62 @@
+name: Release
+
+# Tags only, and deliberately in its own file.
+#
+# A tag push carries no changed paths of its own, so it can never satisfy the
+# path filters the other workflows use to stay off each other's commits. Trying
+# to serve both from one `on:` block means either releases that never fire or
+# CI that runs on everything.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  # Reuses the client workflow rather than repeating the build, so the binary
+  # attached to a release is produced and verified by exactly the same steps
+  # that guard every commit.
+  build:
+    name: Build and verify
+    uses: ./.github/workflows/mac.yml
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Fetch the verified build
+        uses: actions/download-artifact@v4
+        with:
+          name: HomeSync-app
+
+      # Printed so the Homebrew cask can be updated without downloading the
+      # file again to work it out.
+      - name: Checksum
+        run: |
+          echo "sha256: $(sha256sum HomeSync.zip | cut -d' ' -f1)"
+
+      # No checkout in this job, so everything comes from --repo rather than
+      # from the working directory.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NOTES=$(cat <<'TEXT'
+          Unsigned build: macOS quarantines it and Gatekeeper refuses the first
+          launch. Install with Homebrew, which is the least fiddly route:
+
+              brew install --cask --no-quarantine schmidt-gabriel/tap/homesync
+
+          Or, having downloaded it directly:
+
+              xattr -dr com.apple.quarantine HomeSync.app
+          TEXT
+          )
+          gh release create "${GITHUB_REF_NAME}" HomeSync.zip \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "$NOTES" \
+            || gh release upload "${GITHUB_REF_NAME}" HomeSync.zip \
+                 --repo "${GITHUB_REPOSITORY}" --clobber

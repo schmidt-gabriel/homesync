@@ -1,16 +1,24 @@
 name: macOS client
 
+# Scoped to the client. conformance/ is included because the client
+# conformance job runs that suite against the headless binary.
+#
+# Releases are not here: a tag carries no changed paths of its own, so a
+# filtered trigger would never fire for one. release.yml handles tags and
+# reuses this workflow rather than duplicating the build.
 on:
-  # No path filter on push. A release tag carries no changed paths of its own,
-  # so a filtered trigger would skip it and the release would never be
-  # published. Pull requests keep the filter, where it saves the most.
   push:
     branches: [main]
-    tags: ['v*']
+    paths:
+      - 'clients/mac/**'
+      - 'conformance/**'
+      - '.github/workflows/mac.yml'
   pull_request:
     paths:
       - 'clients/mac/**'
+      - 'conformance/**'
       - '.github/workflows/mac.yml'
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
@@ -90,9 +98,6 @@ jobs:
   app:
     name: Build the app
     runs-on: macos-latest
-    # Needed to attach the build to a release on a tag.
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -139,22 +144,6 @@ jobs:
           name: HomeSync-app
           path: clients/mac/HomeSync.zip
           if-no-files-found: error
-
-      # On a tag, the same verified zip becomes a release asset, which is what
-      # the Homebrew cask downloads. The sha256 is printed so the cask can be
-      # updated without downloading the file again to compute it.
-      - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd clients/mac
-          echo "sha256: $(shasum -a 256 HomeSync.zip | cut -d' ' -f1)"
-          gh release create "${GITHUB_REF_NAME}" HomeSync.zip \
-            --title "${GITHUB_REF_NAME}" \
-            --notes "Unsigned build. Install with: brew install --cask --no-quarantine homesync" \
-            --repo "${GITHUB_REPOSITORY}" \
-            || gh release upload "${GITHUB_REF_NAME}" HomeSync.zip --clobber --repo "${GITHUB_REPOSITORY}"
 
   # The artifact this workflow produces is unsigned and unnotarised, so macOS
   # quarantines it on download and Gatekeeper refuses to open it. To run it:
