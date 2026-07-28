@@ -78,6 +78,16 @@ Signing it properly needs a paid Apple Developer account.
 `dev.schmidt.HomeSync` has to stay stable — changing it later leaves an orphan
 entry in System Settings that the app can no longer remove.
 
+Its status is not observable, and there is no notification for it. A computed
+property over `SMAppService.mainApp.status` in the `@Observable` model looks
+right and cannot work: `@Observable` tracks its own storage, so writing through
+such a property registers the login item while telling the view nothing, and the
+toggle goes on drawing the value it last rendered. Mirror the status into a
+stored property and re-read it — after changing it, and whenever the window
+appears or the app is activated, since System Settings can change it meanwhile.
+`register()` also succeeds and leaves the item *off* when the user has switched
+it off there, so trust the status over the call.
+
 ## Where the token lives
 
 In the Keychain, never in `UserDefaults`. A device token grants full read and
