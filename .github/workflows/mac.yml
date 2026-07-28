@@ -19,6 +19,14 @@ on:
       - 'conformance/**'
       - '.github/workflows/mac.yml'
   workflow_call:
+    inputs:
+      version:
+        description: >-
+          Stamped into the built bundle. Without it the app reports whatever is
+          hard-coded in the project, so every release would call itself 1.0.
+        type: string
+        required: false
+        default: ''
   workflow_dispatch:
 
 concurrency:
@@ -105,13 +113,29 @@ jobs:
         working-directory: clients/mac
         # CODE_SIGNING_ALLOWED=NO because the runner holds no Developer ID
         # certificate. The artifact is therefore unsigned: see the note below.
+        #
+        # The version is stamped from the release tag when there is one, so the
+        # bundle agrees with the release it came from. A plain CI build keeps
+        # the project's own value.
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
+          MARKETING=""
+          if [ -n "$VERSION" ]; then
+            # v1.0.1 -> 1.0.1. CFBundleShortVersionString wants digits and dots;
+            # a leading "v" makes it invalid.
+            MARKETING="MARKETING_VERSION=${VERSION#v}"
+          fi
+
+          # shellcheck disable=SC2086
           xcodebuild \
             -project HomeSync.xcodeproj \
             -scheme HomeSync \
             -configuration Release \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+            $MARKETING \
             build
 
       - name: Package
@@ -137,6 +161,7 @@ jobs:
           # A menu bar app that lost LSUIElement would come back with a Dock
           # icon and a stray window, which is a silent regression otherwise.
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' verify/HomeSync.app/Contents/Info.plist)" = "true"
+          echo "version: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' verify/HomeSync.app/Contents/Info.plist)"
 
       - name: Upload
         uses: actions/upload-artifact@v4

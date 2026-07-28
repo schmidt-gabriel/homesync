@@ -14,10 +14,14 @@
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<!-- Taken from the build settings, not written here, so that CI can stamp
+	     the release tag into the bundle. Hard-coded values are silently ignored
+	     when xcodebuild is given MARKETING_VERSION, which makes every release
+	     claim to be the same version. -->
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 
 	<!-- The whole point of a menu bar app: no Dock icon, no main window, and
 	     closing the last window does not quit it. -->
