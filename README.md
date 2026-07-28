@@ -65,8 +65,52 @@ Set `ADMIN_PASSWORD` and the server serves a management page at
 ignore rules. With no password set, none of those routes are registered at all.
 
 ```bash
-ADMIN_PASSWORD=something docker compose up -d
+ADMIN_USER=gabriel ADMIN_PASSWORD=something docker compose up -d
 ```
+
+`ADMIN_USER` defaults to `admin`. The username and the password are both
+checked, both in constant time, and a wrong one of either gives the same
+answer — knowing which half you got right is a head start nobody needs.
+
+`ADMIN_NO_AUTH=true` serves the page with no login at all. It is a real option
+and it is genuinely convenient on a network you control, but be clear about
+what it opens: anyone who can reach the port can issue device tokens, read
+every filename, and empty the trash. The server says so on startup and the page
+carries a banner while it is on.
+
+### Encrypting the files at rest
+
+Off by default. With `ENCRYPTION_KEY` set, file contents are encrypted before
+they touch the volume:
+
+```bash
+docker compose run --rm homesync key generate   # prints a key, store it
+ENCRYPTION_KEY=... docker compose up -d
+```
+
+**What this protects.** A stolen disk, a copied backup, another container that
+has the volume mounted. The server holds the key, so it does not protect
+against someone who has the running server, and it is not end-to-end: clients
+send and receive plaintext, which is what HTTPS is for.
+
+**What stays readable.** Filenames and the shape of the tree. Encrypting those
+would mean the volume no longer shows what is in it, and the index describes
+them in the clear anyway.
+
+**Losing the key loses the files.** Nothing on the server can recover them.
+
+Turning it on does not touch what is already on the volume — the server reads
+either form, so nothing breaks the moment you set the key. To convert:
+
+```bash
+docker compose stop
+docker compose run --rm homesync key encrypt   # or: key decrypt
+docker compose start
+```
+
+Both are safe to interrupt and safe to run twice. Modification times are
+carried across, so a converted tree does not look modified and no client
+re-downloads anything.
 
 ### Configuration
 

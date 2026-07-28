@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/schmidt-gabriel/homesync/server/internal/crypt"
 )
 
 // ErrOutsideRoot means a path resolved somewhere it has no business being.
@@ -23,10 +25,15 @@ var ErrNotRegular = errors.New("not a regular file")
 
 type Store struct {
 	root string
+	// nil when the volume holds plaintext. Reading copes with either form
+	// whatever this says, so turning encryption on does not strand the files
+	// that were already there.
+	key *crypt.Key
 }
 
-// New prepares the data root, creating it if it does not exist.
-func New(root string) (*Store, error) {
+// New prepares the data root, creating it if it does not exist. A non-nil key
+// means new content is encrypted on the way to disk.
+func New(root string, key *crypt.Key) (*Store, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -40,10 +47,16 @@ func New(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{root: resolved}, nil
+	return &Store{root: resolved, key: key}, nil
 }
 
 func (s *Store) Root() string { return s.root }
+
+// Encrypted reports whether new content is being encrypted at rest.
+func (s *Store) Encrypted() bool { return s.key != nil }
+
+// Key is what the index needs to read plaintext during a scan.
+func (s *Store) Key() *crypt.Key { return s.key }
 
 // Abs turns a validated relative path into an absolute one, refusing anything
 // that would land outside the root. Callers have already run the path through
@@ -68,10 +81,14 @@ func (s *Store) Stat(rel string) (os.FileInfo, error) {
 	return os.Lstat(abs)
 }
 
-// Open returns a reader for a regular file. Symlinks are rejected rather than
-// followed, so a link planted in the data root cannot be used to read
-// arbitrary files off the host.
-func (s *Store) Open(rel string) (*os.File, os.FileInfo, error) {
+// Open returns a reader over a regular file's *plaintext*. Symlinks are
+// rejected rather than followed, so a link planted in the data root cannot be
+// used to read arbitrary files off the host.
+//
+// The FileInfo describes the bytes on disk, so its Size is the encrypted
+// length when the file is encrypted. Callers that need the plaintext length
+// seek the reader, which is what http.ServeContent does anyway.
+func (s *Store) Open(rel string) (io.ReadSeekCloser, os.FileInfo, error) {
 	abs, err := s.Abs(rel)
 	if err != nil {
 		return nil, nil, err
@@ -83,11 +100,11 @@ func (s *Store) Open(rel string) (*os.File, os.FileInfo, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil, ErrNotRegular
 	}
-	f, err := os.Open(abs)
+	r, _, err := crypt.Open(abs, s.key)
 	if err != nil {
 		return nil, nil, err
 	}
-	return f, info, nil
+	return r, info, nil
 }
 
 // WriteResult describes a file as it landed on disk.
@@ -123,8 +140,16 @@ func (s *Store) Write(rel string, r io.Reader) (WriteResult, error) {
 		os.Remove(tmpName) // no-op once the rename succeeded
 	}()
 
+	// The hash and the size always describe the plaintext, whatever lands on
+	// disk. They are what the client compares against and what the index
+	// records, and neither has any use for the length of the ciphertext.
 	h := sha256.New()
-	size, err := io.Copy(io.MultiWriter(tmp, h), r)
+	var size int64
+	if s.key != nil {
+		size, err = crypt.Encrypt(tmp, io.TeeReader(r, h), *s.key)
+	} else {
+		size, err = io.Copy(io.MultiWriter(tmp, h), r)
+	}
 	if err != nil {
 		return WriteResult{}, err
 	}

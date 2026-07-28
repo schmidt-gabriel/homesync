@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/schmidt-gabriel/homesync/server/internal/crypt"
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
 	"github.com/schmidt-gabriel/homesync/server/internal/store"
 )
@@ -110,6 +111,21 @@ func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 		// The index and the disk disagree; a rescan will reconcile it.
 		if errors.Is(err, os.ErrNotExist) {
 			writeError(w, http.StatusNotFound, "not_found", "content missing on disk")
+			return
+		}
+		// Worth saying out loud rather than as a generic failure: the fix is
+		// an operator handing the server its key back, and nothing about
+		// "cannot read file" points there.
+		if errors.Is(err, crypt.ErrKeyMissing) {
+			slog.Error("refusing to serve an encrypted file without a key", "path", rel)
+			writeError(w, http.StatusInternalServerError, "encrypted",
+				"this file is encrypted and the server has no ENCRYPTION_KEY configured")
+			return
+		}
+		if errors.Is(err, crypt.ErrCorrupt) {
+			slog.Error("encrypted file failed authentication", "path", rel)
+			writeError(w, http.StatusInternalServerError, "corrupt",
+				"this file did not decrypt; it is damaged, or the key is not the one it was written with")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "cannot read file")

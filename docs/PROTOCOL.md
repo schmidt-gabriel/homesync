@@ -59,6 +59,16 @@ A missing, malformed or unknown token gets `401` with a
 > trusted local network. A client should warn when its configured URL is not
 > `https`.
 
+### Encryption at rest is invisible here
+
+A server may encrypt file contents on its own volume. Nothing in this protocol
+changes when it does, and a client cannot tell: bodies are sent and received as
+plaintext, and `size` and `sha256` always describe that plaintext, never the
+bytes on the server's disk.
+
+Do not implement anything for it. A client that tried to account for the
+server's storage would be wrong on a server that changed its mind.
+
 ---
 
 ## 3. Scopes

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/schmidt-gabriel/homesync/server/internal/crypt"
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
 	"github.com/schmidt-gabriel/homesync/server/internal/trash"
 )
@@ -105,15 +106,22 @@ func (s *Server) handleRestoreTrash(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "cannot stat restored file")
 		return
 	}
-	sum, err := index.HashFile(abs)
+	// Whatever went into the trash came back unchanged, so on an encrypted
+	// volume that is ciphertext. The index only ever describes plaintext.
+	sum, err := crypt.HashFile(abs, s.store.Key())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "cannot hash restored file")
+		return
+	}
+	size, err := index.PlainSize(abs, info, s.store.Key())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "cannot size restored file")
 		return
 	}
 
 	rev, err := s.index.Upsert(r.Context(), index.Entry{
 		Path: rel, Type: index.TypeFile,
-		Size: info.Size(), MTime: info.ModTime().UnixMilli(), SHA256: sum,
+		Size: size, MTime: info.ModTime().UnixMilli(), SHA256: sum,
 	})
 	if err != nil {
 		s.writeStoreError(w, err)
@@ -121,7 +129,7 @@ func (s *Server) handleRestoreTrash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, fileResponse{
-		Path: responsePath(r, rel), Rev: rev, Size: info.Size(), SHA256: sum,
+		Path: responsePath(r, rel), Rev: rev, Size: size, SHA256: sum,
 		MTime: info.ModTime().UnixMilli(), Type: index.TypeFile,
 	})
 }
