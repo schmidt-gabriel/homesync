@@ -249,6 +249,72 @@ struct SyncEngineTests {
         }
     }
 
+    @Test("losing the state database does not delete the folder")
+    func forgottenStateKeepsLocalFiles() async throws {
+        let machine = try TestMachine()
+
+        for index in 1...10 {
+            try machine.write("kept-\(index).txt", "content \(index)")
+        }
+        try await machine.engine.syncOnce()
+
+        // The server no longer has them: deleted from another machine, or
+        // dropped when an ignore rule started matching them. Either way the
+        // change set is now ten tombstones for paths that exist here.
+        for index in 1...10 {
+            try await machine.server.delete(machine.scoped("kept-\(index).txt"))
+        }
+
+        // The app restarts and cannot find its state database.
+        let forgetful = try machine.withForgottenState()
+        try await forgetful.engine.syncOnce()
+
+        // Ten tombstones against an empty record used to be read as ten
+        // deletions to apply, against a limit computed as a fraction of
+        // nothing — so the engine paused, and would have deleted the lot had
+        // the guard not been there. Neither is right: with no record of these
+        // files, the server's word is not evidence that they should go.
+        #expect(forgetful.files().count == 10)
+        #expect(forgetful.read("kept-1.txt") == "content 1")
+
+        if case .paused(let reason) = await forgetful.engine.currentState {
+            Issue.record("the engine paused over deletions it should not make: \(reason)")
+        }
+
+        // They exist here and not there, so they go back up.
+        #expect(try await forgetful.server.read(forgetful.scoped("kept-1.txt")) == "content 1")
+    }
+
+    @Test("ignored paths are not counted against the delete guard")
+    func ignoredTombstonesDoNotTripTheGuard() async throws {
+        let machine = try TestMachine(maxDeletes: 3)
+
+        // Present on both sides, and ignored here. `*.swp` is platform noise,
+        // so the rule needs no cooperation from the shared server — these
+        // tests run against one instance, and a test that rewrote the ignore
+        // document would change what every other test syncs.
+        for index in 1...10 {
+            try machine.write("session-\(index).swp", "editor scratch \(index)")
+            try await machine.server.write(machine.scoped("session-\(index).swp"), "scratch")
+        }
+        for index in 1...10 {
+            try await machine.server.delete(machine.scoped("session-\(index).swp"))
+        }
+
+        // The change set holds ten tombstones for paths that exist on this
+        // disk, and the guard used to count all ten — although the ignore
+        // rules drop every one of them before anything is applied, so the pull
+        // was never going to delete a thing.
+        try await machine.engine.syncOnce()
+
+        // Asked of the disk directly: `files()` filters by the same rules, so
+        // it would report these missing whether or not they survived.
+        #expect((1...10).allSatisfy { machine.exists("session-\($0).swp") })
+        if case .paused(let reason) = await machine.engine.currentState {
+            Issue.record("paused over ignored paths: \(reason)")
+        }
+    }
+
     @Test("a download is not re-uploaded on the next cycle")
     func downloadsDoNotEcho() async throws {
         let machine = try TestMachine()

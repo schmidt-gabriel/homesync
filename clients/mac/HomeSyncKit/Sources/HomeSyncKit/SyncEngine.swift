@@ -170,9 +170,9 @@ public actor SyncEngine {
             return summary
         }
 
-        try checkDeleteGuard(entries)
-
         let relevant = entries.filter { !rules.excludes($0.path, isDirectory: $0.type == .dir) }
+        try checkDeleteGuard(relevant)
+
         report(.downloading, completed: 0, total: relevant.count)
 
         for (index, entry) in relevant.enumerated() {
@@ -198,13 +198,27 @@ public actor SyncEngine {
     /// A corrupted state database or an unmounted server volume both look, from
     /// here, exactly like "the user deleted everything". Pausing and telling
     /// someone is the only safe response.
+    ///
+    /// It counts only what this pull would really remove. Judging it on every
+    /// tombstone in the change set instead would sweep in paths the ignore
+    /// rules drop before anything is applied, and paths holding local content
+    /// the engine already refuses to touch — pausing over deletions that were
+    /// never going to happen.
     private func checkDeleteGuard(_ entries: [RemoteEntry]) throws {
-        let deletions = entries.filter { $0.deleted && store.exists($0.path) }.count
+        let deletions = try entries.filter { entry in
+            guard entry.deleted, let local = store.describe(entry.path) else { return false }
+            return try isDeletable(entry.path, local: local)
+        }.count
         guard deletions > 0 else { return }
 
-        let known = max((try? state.count()) ?? 0, 1)
-        let fractionLimit = Int(Double(known) * configuration.maxDeleteFraction)
-        let limit = max(min(configuration.maxDeletesPerPull, fractionLimit), 1)
+        let known = (try? state.count()) ?? 0
+        // A fraction of nothing rounds to nothing, and a limit of zero — raised
+        // to one — would stop the very first pull. With no record to take a
+        // proportion of, the absolute cap is the only meaningful bound.
+        let limit = known == 0
+            ? configuration.maxDeletesPerPull
+            : max(min(configuration.maxDeletesPerPull,
+                      Int(Double(known) * configuration.maxDeleteFraction)), 1)
 
         guard deletions > limit else { return }
 
@@ -264,20 +278,43 @@ public actor SyncEngine {
             return
         }
 
-        // The server says this is gone, but it changed here since we last
-        // agreed. Deleting would silently discard that edit, so keep the file:
-        // the push phase will upload it again as a new path.
-        if local.type == .file, let recorded = try state.state(for: entry.path) {
-            let unchanged = local.size == recorded.size && local.mtime == recorded.mtime
-            if !unchanged, (try? store.hash(entry.path)) != recorded.sha256 {
-                try state.forget(entry.path)
-                return
-            }
+        // Keep it, and forget it. The push phase then sees a path on disk that
+        // the server does not have and uploads it, which is what "this is local
+        // content" means in the only vocabulary the two sides share.
+        guard try isDeletable(entry.path, local: local) else {
+            try state.forget(entry.path)
+            return
         }
 
         try store.remove(entry.path)
         try state.forget(entry.path)
         summary.deletedLocally += 1
+    }
+
+    /// Whether a tombstone is allowed to remove what is on disk here.
+    ///
+    /// Only content we recorded as synced, and that has not changed since, may
+    /// go on the server's word alone. Two cases are refused:
+    ///
+    /// A path with no record was never confirmed as ours. It is a file the user
+    /// put there, or one left behind when the state database was lost — and a
+    /// lost database is precisely when the server's tombstones stop describing
+    /// this machine. Deleting on that basis destroys work the server never had.
+    ///
+    /// A path that changed since we last agreed holds an edit the server has
+    /// not seen, which deleting would silently discard.
+    private func isDeletable(_ path: String, local: LocalFile) throws -> Bool {
+        guard let recorded = try state.state(for: path) else { return false }
+        guard local.type == .file else {
+            // Removing a directory takes everything under it, including files
+            // that were never recorded, so it has to be empty to be safe. One
+            // that still holds something is kept and, like any other local
+            // content, offered back to the server on the next push.
+            return try store.isEmptyDirectory(path)
+        }
+
+        if local.size == recorded.size, local.mtime == recorded.mtime { return true }
+        return (try? store.hash(path)) == recorded.sha256
     }
 
     private func applyFile(_ entry: RemoteEntry, into summary: inout SyncSummary) async throws {
@@ -400,7 +437,7 @@ public actor SyncEngine {
             let snapshotSize = (try? FileManager.default
                 .attributesOfItem(atPath: snapshot.path)[.size] as? Int64) ?? file.size
             let sent = LocalFile(
-                path: path, type: .file, size: snapshotSize ?? file.size, mtime: file.mtime)
+                path: path, type: .file, size: snapshotSize, mtime: file.mtime)
 
             try await upload(
                 path, file: sent, from: snapshot, sha: sha,

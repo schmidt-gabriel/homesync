@@ -140,6 +140,29 @@ struct TestMachine {
             engine: try SyncEngine(configuration: configuration), server: server)
     }
 
+    /// A fresh engine over the same folder but an *empty* state database.
+    ///
+    /// What the app looked like when the state file was keyed by `hashValue`:
+    /// the folder is untouched and full, and the engine has no memory of ever
+    /// having synced any of it.
+    func withForgottenState() throws -> TestMachine {
+        guard let serverURL = TestServer.url, let token = TestServer.token else {
+            throw TestServerUnavailable()
+        }
+
+        let fresh = stateURL
+            .deletingLastPathComponent()
+            .appending(path: "forgotten-\(UUID().uuidString.prefix(8)).sqlite")
+
+        let configuration = Configuration(
+            serverURL: serverURL, token: token, root: root,
+            stateURL: fresh, deviceName: "forgetful", maxDeleteFraction: 1.0)
+
+        return TestMachine(
+            scope: scope, root: root, stateURL: fresh, store: store,
+            engine: try SyncEngine(configuration: configuration), server: server)
+    }
+
     /// The full sync path for a name inside this machine's scope.
     func scoped(_ path: String) -> String { "\(scope)/\(path)" }
 
