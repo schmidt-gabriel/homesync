@@ -165,8 +165,8 @@
           folder and they share those files; leave it blank for a folder named after the device.
         </p>
         <div id="new-token" hidden>
-          <p class="muted" style="margin-bottom:0">
-            Copy this token into the app now — only its hash is stored, so it cannot be shown again.
+          <p class="muted" style="margin-bottom:0" id="token-heading">
+            Copy this token into the app now. Only its hash is stored, so it cannot be shown again.
           </p>
           <div class="token" id="token-value"></div>
         </div>
@@ -413,6 +413,36 @@ async function loadDevices() {
     scopeCell.append(edit);
 
     const actionCell = document.createElement("td");
+
+    const renew = document.createElement("button");
+    renew.className = "ghost";
+    renew.textContent = "New token";
+    renew.style.marginRight = "6px";
+    renew.addEventListener("click", async () => {
+      // Spelled out rather than a generic confirmation: the cost falls on a
+      // machine that is not in front of you, and it falls immediately.
+      if (!confirm(
+        `Issue a new token for "${device.name}"?\n\n` +
+        "The current token stops working the moment you confirm. Any machine " +
+        "still using it stops syncing until you paste the new one in, and the " +
+        "new token is shown only once.")) {
+        return;
+      }
+      try {
+        const result = await api(`/admin/api/devices/${encodeURIComponent(device.name)}/token`,
+          { method: "POST" });
+        $("token-value").textContent = result.token;
+        $("new-token").hidden = false;
+        $("token-heading").textContent =
+          `New token for ${result.name}. The previous one no longer works.`;
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        loadDevices();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    actionCell.append(renew);
+
     const revoke = document.createElement("button");
     revoke.className = "ghost danger";
     revoke.textContent = "Revoke";
@@ -441,6 +471,8 @@ $("device-form").addEventListener("submit", async (event) => {
   });
 
   $("token-value").textContent = result.token;
+  $("token-heading").textContent =
+    "Copy this token into the app now. Only its hash is stored, so it cannot be shown again.";
   $("new-token").hidden = false;
   $("device-name").value = "";
   $("device-scope").value = "";

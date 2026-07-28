@@ -60,25 +60,18 @@ final class AppModel {
     private var engineTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
 
-    /// What the bundle says it is, as "1.0.2 (3)".
+    /// What the bundle says it is, such as "1.0.3".
     ///
     /// Read from the bundle rather than written in code: the two would drift,
     /// and the version is the first thing worth knowing when someone reports a
     /// problem. CI stamps it from the release tag.
-    static let version: String = {
-        let bundle = Bundle.main
-        let short = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-
-        switch (short, build) {
-        case let (short?, build?) where short != build:
-            return "\(short) (\(build))"
-        case let (short?, _):
-            return short
-        default:
-            return "unknown"
-        }
-    }()
+    ///
+    /// The build number is deliberately left out. It is a CI run counter and
+    /// means nothing to anyone reading it; the release version is what
+    /// identifies a build.
+    static let version: String =
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        ?? "unknown"
 
     static let defaultFolder = FileManager.default
         .homeDirectoryForCurrentUser

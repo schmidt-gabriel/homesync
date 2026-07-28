@@ -70,7 +70,7 @@ struct MenuBarView: View {
             // Top right, quiet enough to ignore and close enough to find: the
             // answer to "which version are you running" should not need the
             // Finder, but it is not what anyone opens this menu for.
-            Text(AppModel.version)
+            Text("Version \(AppModel.version)")
                 .font(.system(size: 9))
                 .foregroundStyle(.quaternary)
                 .textSelection(.enabled)

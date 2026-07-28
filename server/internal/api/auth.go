@@ -93,6 +93,34 @@ func ListDevices(ctx context.Context, db *sql.DB) ([]Device, error) {
 	return devices, rows.Err()
 }
 
+// RotateToken issues a new token for a device and invalidates the old one.
+//
+// There is no grace period on purpose: the point of rotating is usually that
+// the previous token should stop working, and a token that lingers for a while
+// after being replaced is the opposite of that. Anything still presenting the
+// old one starts getting 401 immediately.
+func RotateToken(ctx context.Context, db *sql.DB, name string) (string, error) {
+	token, err := NewToken()
+	if err != nil {
+		return "", err
+	}
+
+	res, err := db.ExecContext(ctx,
+		`UPDATE devices SET token_hash = ? WHERE name = ?`, hashToken(token), name)
+	if err != nil {
+		return "", err
+	}
+
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if changed == 0 {
+		return "", sql.ErrNoRows
+	}
+	return token, nil
+}
+
 // SetScope repoints a device at a different subtree. Pointing two devices at
 // the same one is what makes them share files.
 func SetScope(ctx context.Context, db *sql.DB, name, scope string) (int64, error) {

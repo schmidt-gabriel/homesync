@@ -2,8 +2,10 @@ package api
 
 import (
 	"crypto/subtle"
+	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -91,6 +93,7 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("POST /admin/api/devices", s.requireAdmin(s.handleAdminCreateDevice))
 	s.mux.HandleFunc("DELETE /admin/api/devices/{name}", s.requireAdmin(s.handleAdminDeleteDevice))
 	s.mux.HandleFunc("PUT /admin/api/devices/{name}/scope", s.requireAdmin(s.handleAdminSetScope))
+	s.mux.HandleFunc("POST /admin/api/devices/{name}/token", s.requireAdmin(s.handleAdminRotateToken))
 	s.mux.HandleFunc("GET /admin/api/files", s.requireAdmin(s.handleAdminBrowse))
 	s.mux.HandleFunc("GET /admin/api/trash", s.requireAdmin(s.handleListTrash))
 	s.mux.HandleFunc("POST /admin/api/trash/restore", s.requireAdmin(s.handleRestoreTrash))
@@ -325,6 +328,31 @@ func (s *Server) handleAdminDeleteDevice(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+func (s *Server) handleAdminRotateToken(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	token, err := RotateToken(r.Context(), s.index.DB(), name)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "no such device")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "cannot issue a new token")
+		return
+	}
+
+	slog.Info("device token rotated", "device", name)
+
+	// Shown once, as at creation: only the hash is kept, so this response
+	// cannot be produced again.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":  name,
+		"token": token,
+		"notice": "the previous token stopped working immediately; " +
+			"any machine still using it will get 401 until this one is pasted in",
+	})
 }
 
 type scopeRequest struct {
