@@ -104,7 +104,22 @@ func (s *Server) adminRoutes() {
 	if err != nil {
 		panic("embedded ui missing: " + err.Error())
 	}
-	s.mux.Handle("GET /", http.FileServerFS(ui))
+
+	// The page is compiled into the binary, so it changes exactly when the
+	// server is upgraded — and without this, a browser happily keeps showing
+	// the previous version afterwards, which looks like the upgrade did not
+	// take. It is a few kilobytes served over a local network; there is
+	// nothing to gain by caching it.
+	s.mux.Handle("GET /", noCache(http.FileServerFS(ui)))
+}
+
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {

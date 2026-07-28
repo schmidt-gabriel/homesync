@@ -108,10 +108,53 @@ extension SyncSummary: CustomStringConvertible {
     }
 }
 
+/// How far through the current cycle the engine is.
+///
+/// Reported per phase rather than as one number for the whole cycle: how much
+/// there is to upload is not known until the download phase has finished, so a
+/// single combined total would have to be guessed and then revised downwards,
+/// which is worse than two honest ones.
+public struct SyncProgress: Sendable, Equatable {
+    public enum Phase: Sendable, Equatable {
+        case downloading
+        case uploading
+
+        public var verb: String {
+            switch self {
+            case .downloading: return "Downloading"
+            case .uploading: return "Uploading"
+            }
+        }
+    }
+
+    public let phase: Phase
+    public let completed: Int
+    public let total: Int
+
+    public init(phase: Phase, completed: Int, total: Int) {
+        self.phase = phase
+        self.completed = completed
+        self.total = total
+    }
+
+    /// 0 to 1, or nil when there is nothing to be a fraction of.
+    public var fraction: Double? {
+        guard total > 0 else { return nil }
+        return min(Double(completed) / Double(total), 1)
+    }
+
+    public var percentage: Int? {
+        guard let fraction else { return nil }
+        return Int(fraction * 100)
+    }
+}
+
 /// What the engine is doing, for a user interface to show.
 public enum SyncState: Sendable, Equatable {
     case idle(lastSync: Date?)
-    case syncing
+    /// `progress` is nil for a cycle small enough that counting it would be
+    /// noise, and for the moment before the work is known.
+    case syncing(progress: SyncProgress?)
     case paused(reason: String)
     case failed(String)
 }

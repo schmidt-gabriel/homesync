@@ -44,6 +44,14 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if case .syncing(let progress) = model.state,
+                   let progress, let fraction = progress.fraction {
+                    ProgressView(value: fraction)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 190)
+                        .padding(.top, 3)
+                }
+
                 if model.isConfigured, case .idle = model.state {
                     // HTTP on a home network is the expected setup, not a
                     // problem, so it belongs here as a quiet note about which

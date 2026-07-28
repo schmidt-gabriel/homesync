@@ -132,7 +132,7 @@ public actor SyncEngine {
     public func syncOnce() async throws -> SyncSummary {
         guard !isSyncing else { return SyncSummary() }
         isSyncing = true
-        status = .syncing
+        status = .syncing(progress: nil)
         defer { isSyncing = false }
 
         do {
@@ -172,10 +172,11 @@ public actor SyncEngine {
 
         try checkDeleteGuard(entries)
 
-        for entry in entries {
-            if rules.excludes(entry.path, isDirectory: entry.type == .dir) {
-                continue
-            }
+        let relevant = entries.filter { !rules.excludes($0.path, isDirectory: $0.type == .dir) }
+        report(.downloading, completed: 0, total: relevant.count)
+
+        for (index, entry) in relevant.enumerated() {
+            report(.downloading, completed: index, total: relevant.count)
 
             do {
                 try await apply(entry, into: &summary)
@@ -346,6 +347,17 @@ public actor SyncEngine {
             summary.directoriesCreated += 1
         }
 
+        // Counted before uploading rather than as we go, so the total does not
+        // climb while the bar is moving.
+        let pending = onDisk.values.filter { file in
+            guard file.type == .file else { return false }
+            guard let known = recorded[file.path] else { return true }
+            return known.size != file.size || known.mtime != file.mtime
+        }.count
+        let removals = recorded.keys.filter { onDisk[$0] == nil }.count
+        var done = 0
+        report(.uploading, completed: 0, total: pending + removals)
+
         for (path, file) in onDisk where file.type == .file {
             let known = recorded[path]
 
@@ -369,6 +381,8 @@ public actor SyncEngine {
             }
 
             try await upload(path, file: file, sha: sha, baseRev: known?.rev ?? 0, into: &summary)
+            done += 1
+            report(.uploading, completed: done, total: pending + removals)
         }
 
         try await pushDeletions(onDisk: onDisk, recorded: recorded, into: &summary)
@@ -409,6 +423,19 @@ public actor SyncEngine {
             summary.downloaded += 1
         }
     }
+
+    /// Publishes progress, but only when there is enough work for a number to
+    /// mean anything. A cycle of three files would flash a percentage that is
+    /// gone before it can be read.
+    private func report(_ phase: SyncProgress.Phase, completed: Int, total: Int) {
+        guard total >= Self.progressThreshold else {
+            status = .syncing(progress: nil)
+            return
+        }
+        status = .syncing(progress: SyncProgress(phase: phase, completed: completed, total: total))
+    }
+
+    private static let progressThreshold = 12
 
     private func pushDeletions(
         onDisk: [String: LocalFile], recorded: [String: SyncedState],

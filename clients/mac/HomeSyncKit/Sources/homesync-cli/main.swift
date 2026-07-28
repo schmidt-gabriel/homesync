@@ -98,6 +98,9 @@ let reporter = Task {
                 log("up to date · \(count) files · \(conflicts.count) conflicts: "
                     + conflicts.suffix(3).joined(separator: ", "))
             }
+        } else if case .syncing(let progress) = state, let progress,
+                  let pct = progress.percentage {
+            log("\(progress.phase.verb) \(progress.completed)/\(progress.total) · \(pct)%")
         } else if case .paused(let reason) = state {
             log("PAUSED: \(reason)")
         } else if case .failed(let reason) = state {

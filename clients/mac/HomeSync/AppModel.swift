@@ -211,7 +211,7 @@ final class AppModel {
             // Anything other than idle wins over the latch: an error or a pause
             // is more important than finishing the animation.
             if case .idle = actual, let until = syncingUntil, clock.now < until {
-                state = .syncing
+                state = .syncing(progress: nil)
             } else {
                 syncingUntil = nil
                 state = actual
@@ -262,8 +262,11 @@ extension SyncState {
         case .idle(let lastSync):
             guard let lastSync else { return "Ready" }
             return "Up to date · \(Self.relative(lastSync))"
-        case .syncing:
-            return "Syncing…"
+        case .syncing(let progress):
+            guard let progress, let percentage = progress.percentage else {
+                return "Syncing…"
+            }
+            return "\(progress.phase.verb) \(progress.completed) of \(progress.total) · \(percentage)%"
         case .paused(let reason):
             return reason
         case .failed(let reason):
