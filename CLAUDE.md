@@ -9,9 +9,10 @@ more than one machine reaches the same files; clients keep one number and ask
 ```
 server/        Go: HTTP API, SQLite index, fsnotify, trash, embedded admin UI
 clients/mac/   Swift: HomeSyncKit (the engine, no UI) + HomeSync.xcodeproj
+clients/linux/ Go: homesync-client daemon + systemd user unit
 conformance/   Go: the executable contract, run against any client
 docs/PROTOCOL.md   The contract itself. Written before the second client.
-.github/workflows/ server.yml, mac.yml, release.yml
+.github/workflows/ server.yml, mac.yml, linux.yml, release.yml
 ```
 
 `clients/mac/`, not `mac/`: another platform goes in beside it without moving
@@ -54,6 +55,12 @@ cd conformance && HOMESYNC_URL=http://localhost:8420 HOMESYNC_TOKEN=$TOKEN go te
 cd clients/mac/HomeSyncKit && \
   HOMESYNC_TEST_URL=http://localhost:8420 HOMESYNC_TEST_TOKEN=$TOKEN swift test
 
+# The Linux client: unit tests, then the real binary driven end to end
+cd clients/linux && go test -race ./...
+cd conformance && go build -o /tmp/homesync-client ../clients/linux/cmd/homesync-client && \
+  HOMESYNC_URL=http://localhost:8420 HOMESYNC_TOKEN=$TOKEN HOMESYNC_SCOPE=linux \
+  HOMESYNC_CLIENT_CMD=/tmp/homesync-client go test -run TestClientConformance ./...
+
 # The app
 cd clients/mac && xcodebuild -scheme HomeSync -configuration Release CODE_SIGNING_ALLOWED=NO
 ```
@@ -85,6 +92,13 @@ underneath. Snapshot first, then hash and send the snapshot. The server verifies
 **Never animate the menu bar icon by setting its image.** Driving a rotation
 from a timer put ~98% of the main thread inside `NSStatusBarButton.setImage:`
 and froze the app under load. Use `.symbolEffect`.
+
+**The client conformance suite needs a scope to itself, fresh each run.** It
+writes fixed filenames and asserts on what comes back, so a scope still holding
+the last run's `from-server.txt` fails for reasons that have nothing to do with
+the client. It also starts the client in its own process group and signals the
+group: killing only `cmd.Process` reaches the shell, and where `/bin/sh` forks
+rather than execs (dash, so every Linux runner) the client outlives the test.
 
 **Encryption at rest is server-side.** The server holds the key, so it defends a
 stolen disk or a copied backup, not a compromised server. Sizes and hashes in
