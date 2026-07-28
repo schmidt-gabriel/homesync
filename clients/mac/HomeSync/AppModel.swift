@@ -36,6 +36,21 @@ final class AppModel {
     private(set) var isConfigured = false
     private(set) var isInsecure = false
 
+    /// The outcome of the last attempt to reach the server from Settings.
+    ///
+    /// Saving a URL and a token is not the same as them working, and the
+    /// difference is exactly what someone wants to know at the moment they
+    /// press Apply. The engine's own status eventually says the same thing,
+    /// but only after a sync cycle and only in the menu.
+    enum ConnectionCheck: Equatable {
+        case none
+        case checking
+        case connected
+        case failed(String)
+    }
+
+    private(set) var connectionCheck: ConnectionCheck = .none
+
     var launchesAtLogin: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set { setLaunchAtLogin(newValue) }
@@ -77,9 +92,6 @@ final class AppModel {
             self.engine = engine
             isConfigured = true
 
-            createConvenienceSymlink(to: root)
-            brandSyncFolder(root)
-
             engineTask = Task { await engine.run() }
             pollTask = Task { [weak self] in await self?.pollStatus(of: engine) }
         } catch {
@@ -100,6 +112,59 @@ final class AppModel {
     /// reason about than mutating a running engine's configuration.
     func restart() {
         start()
+    }
+
+    /// Saves new server settings and reports whether they actually work.
+    ///
+    /// The settings are stored either way: they are the user's input, and
+    /// refusing to keep them because the server happens to be down right now
+    /// would be worse than telling them what went wrong.
+    func applyServerSettings(url rawURL: String, token newToken: String) async {
+        let trimmedURL = rawURL.trimmingCharacters(in: .whitespaces)
+        let trimmedToken = newToken.trimmingCharacters(in: .whitespaces)
+
+        serverURL = trimmedURL
+        token = trimmedToken
+        connectionCheck = .checking
+
+        guard let url = URL(string: trimmedURL), url.host != nil else {
+            connectionCheck = .failed("That does not look like a URL.")
+            return
+        }
+
+        // One cheap authenticated request answers everything that can be wrong
+        // at this point: unreachable host, wrong port, bad token.
+        let client = APIClient(baseURL: url, token: trimmedToken)
+        do {
+            _ = try await client.changes(since: 0, limit: 1)
+            connectionCheck = .connected
+            restart()
+        } catch {
+            connectionCheck = .failed(describe(error))
+            restart()
+        }
+    }
+
+    /// Turns a failure into something worth reading. `SyncError` already
+    /// describes itself well; the two cases worth rewording are the ones a
+    /// person can actually act on.
+    private func describe(_ error: any Error) -> String {
+        guard let syncError = error as? SyncError else {
+            return error.localizedDescription
+        }
+
+        switch syncError {
+        case .unauthorized:
+            return "The server rejected this token. Create a new one and paste it here."
+        case .transport:
+            return "Could not reach the server. Check the address, the port, and that it is running."
+        default:
+            return String(describing: syncError)
+        }
+    }
+
+    func clearConnectionCheck() {
+        connectionCheck = .none
     }
 
     func syncNow() {
@@ -147,49 +212,6 @@ final class AppModel {
         }
     }
 
-    /// `~/Library/CloudStorage` is buried and awkward to reach. A symlink in the
-    /// home folder makes the synced files easy to get at from a terminal or the
-    /// Finder's Go menu.
-    private func createConvenienceSymlink(to root: URL) {
-        let manager = FileManager.default
-        let link = manager.homeDirectoryForCurrentUser.appending(path: "HomeSync")
-
-        // `fileExists` follows symlinks, so a link left pointing at an old sync
-        // folder reports as missing while still occupying the name — and the
-        // create then fails silently, leaving the user with a dead shortcut.
-        // Reading the link itself is the only way to tell the three cases
-        // apart: correct, stale, or something that is not a link at all.
-        let target = try? manager.destinationOfSymbolicLink(atPath: link.path)
-
-        if target != nil {
-            guard target != root.path else { return }
-            try? manager.removeItem(at: link)
-        } else if manager.fileExists(atPath: link.path) {
-            // A real file or folder lives here. It is the user's, not ours.
-            return
-        }
-
-        try? manager.createSymbolicLink(at: link, withDestinationURL: root)
-    }
-
-    /// Gives the sync folder the app's icon, so it is recognisable in the
-    /// Finder the way Dropbox's and Drive's folders are.
-    ///
-    /// This is as far as an ordinary app can go towards looking built in. A
-    /// real entry in the Finder sidebar is not something an app can add:
-    /// `LSSharedFileList`, the old API for it, crashes outright on current
-    /// macOS, and the sidebar's data store is protected by TCC. Drive and
-    /// OneDrive get their entry by being File Provider extensions, which is a
-    /// different architecture rather than an extra call. Until then, the user
-    /// drags the folder to the sidebar once.
-    private func brandSyncFolder(_ root: URL) {
-        // Asking the workspace for our own bundle's icon, rather than looking
-        // the asset up by name: the icon is compiled by Icon Composer into a
-        // form `NSImage(named:)` does not resolve, and this works whatever
-        // format it was authored in.
-        let icon = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
-        NSWorkspace.shared.setIcon(icon, forFile: root.path, options: [])
-    }
 }
 
 // MARK: - Presentation

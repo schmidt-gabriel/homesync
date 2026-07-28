@@ -53,14 +53,15 @@ private struct ServerSettings: View {
 
             Section {
                 HStack {
+                    status
+
                     Spacer()
+
                     Button("Apply") {
-                        model.serverURL = draftURL.trimmingCharacters(in: .whitespaces)
-                        model.token = draftToken.trimmingCharacters(in: .whitespaces)
-                        model.restart()
+                        Task { await model.applyServerSettings(url: draftURL, token: draftToken) }
                     }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(draftURL.isEmpty || draftToken.isEmpty)
+                    .disabled(!hasChanges || isChecking)
                 }
             }
         }
@@ -71,33 +72,87 @@ private struct ServerSettings: View {
             draftURL = model.serverURL
             draftToken = model.token
         }
+        .onChange(of: draftURL) { model.clearConnectionCheck() }
+        .onChange(of: draftToken) { model.clearConnectionCheck() }
+    }
+
+    /// Apply stays disabled while the fields still match what is saved: with
+    /// nothing to apply, pressing it would restart the engine for no reason and
+    /// tell the user nothing.
+    private var hasChanges: Bool {
+        let url = draftURL.trimmingCharacters(in: .whitespaces)
+        let token = draftToken.trimmingCharacters(in: .whitespaces)
+
+        guard !url.isEmpty, !token.isEmpty else { return false }
+        return url != model.serverURL || token != model.token
+    }
+
+    private var isChecking: Bool { model.connectionCheck == .checking }
+
+    @ViewBuilder
+    private var status: some View {
+        switch model.connectionCheck {
+        case .none:
+            EmptyView()
+
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Connecting…")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        case .connected:
+            Label("Connected", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+
+        case .failed(let reason):
+            Label(reason, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
 private struct GeneralSettings: View {
     @Bindable var model: AppModel
-    @State private var isChoosingFolder = false
+    @State private var draftFolder = ""
 
     var body: some View {
         Form {
             Section {
-                LabeledContent("Sync folder") {
-                    HStack {
-                        Text(model.syncFolder)
-                            .font(.caption.monospaced())
-                            .lineLimit(1)
-                            .truncationMode(.head)
+                // Typed as well as picked. A panel cannot reach a folder that
+                // does not exist yet, or one on a volume that is not mounted
+                // right now, and both are reasonable things to configure.
+                TextField(
+                    "Sync folder",
+                    text: $draftFolder,
+                    prompt: Text(AppModel.defaultFolder))
+                    .font(.caption.monospaced())
 
-                        Button("Choose…") { chooseFolder() }
-                    }
+                HStack {
+                    Button("Choose…") { chooseFolder() }
+                    Button("Use Default") { draftFolder = AppModel.defaultFolder }
+                        .disabled(expanded == AppModel.defaultFolder)
+
+                    Spacer()
+
+                    Button("Move") { apply() }
+                        .disabled(!hasChanges)
                 }
 
-                Text("""
-                    A symlink at ~/HomeSync points here, since \
-                    ~/Library/CloudStorage is awkward to reach.
-                    """)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if hasChanges {
+                    Text("""
+                        Changing this starts over: HomeSync downloads everything into the \
+                        new folder. The old one is left exactly as it is.
+                        """)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } header: {
                 Text("Files")
             }
@@ -112,6 +167,24 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { draftFolder = model.syncFolder }
+    }
+
+    /// A typed path may well use `~`, and may have picked up whitespace from a
+    /// copy and paste.
+    private var expanded: String {
+        (draftFolder.trimmingCharacters(in: .whitespaces) as NSString).expandingTildeInPath
+    }
+
+    private var hasChanges: Bool {
+        !expanded.isEmpty && expanded.hasPrefix("/") && expanded != model.syncFolder
+    }
+
+    private func apply() {
+        guard hasChanges else { return }
+        model.syncFolder = expanded
+        draftFolder = expanded
+        model.restart()
     }
 
     private func chooseFolder() {
@@ -123,7 +196,6 @@ private struct GeneralSettings: View {
         panel.prompt = "Select"
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.syncFolder = url.path
-        model.restart()
+        draftFolder = url.path
     }
 }

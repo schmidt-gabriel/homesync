@@ -34,7 +34,6 @@
     position: sticky; top: 0; z-index: 10;
   }
   header h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
-  header .rev { font: 12px var(--mono); color: var(--muted); }
   header .spacer { flex: 1; }
   main { max-width: 1040px; margin: 0 auto; padding: 24px; }
   nav { display: flex; gap: 4px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -124,7 +123,6 @@
 <div id="app" hidden>
   <header>
     <h1>HomeSync</h1>
-    <span class="rev" id="rev-badge"></span>
     <span class="spacer"></span>
     <button class="ghost" id="refresh">Refresh</button>
     <button class="ghost" id="logout">Sign out</button>
@@ -189,7 +187,7 @@
         <div class="crumbs" id="crumbs"></div>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>Name</th><th class="num">Size</th><th class="num">Rev</th><th>Modified</th></tr></thead>
+            <thead><tr><th>Name</th><th class="num">Size</th><th>Modified</th></tr></thead>
             <tbody id="file-rows"></tbody>
           </table>
         </div>
@@ -305,7 +303,6 @@ function refresh() {
 async function loadOverview() {
   const data = await api("/admin/api/overview");
 
-  $("rev-badge").textContent = `rev ${data.stats.current_rev}`;
   $("insecure").hidden = data.secure;
 
   const cards = [
@@ -328,8 +325,6 @@ async function loadOverview() {
 
   const details = [
     ["Data directory", data.data_dir],
-    ["Current revision", String(data.stats.current_rev)],
-    ["Delete markers", `${data.stats.tombstones} (pruned after 90 days)`],
     ["Last full scan", `${formatTime(data.last_scan_at)}${data.last_scan_info ? ` · ${data.last_scan_info}` : ""}`],
     ["Transport", data.secure ? "HTTPS" : "plain HTTP (local network)"],
   ];
@@ -477,7 +472,7 @@ async function loadFiles() {
   if (data.entries.length === 0) {
     const tr = document.createElement("tr");
     const td = cell("Empty.", "empty");
-    td.colSpan = 4;
+    td.colSpan = 3;
     tr.append(td);
     host.append(tr);
     return;
@@ -511,7 +506,6 @@ async function loadFiles() {
     tr.append(
       nameCell,
       cell(entry.type === "dir" ? "—" : formatBytes(entry.size), "num"),
-      cell(String(entry.rev), "num"),
       cell(formatTime(entry.mtime)),
     );
     host.append(tr);
