@@ -127,16 +127,30 @@ jobs:
             MARKETING="MARKETING_VERSION=${VERSION#v}"
           fi
 
-          # shellcheck disable=SC2086
-          xcodebuild \
-            -project HomeSync.xcodeproj \
-            -scheme HomeSync \
-            -configuration Release \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
-            $MARKETING \
-            build
+          build_once() {
+            # shellcheck disable=SC2086
+            xcodebuild \
+              -project HomeSync.xcodeproj \
+              -scheme HomeSync \
+              -configuration Release \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+              $MARKETING \
+              build
+          }
+
+          # actool crashes on the .icon file every so often, with an internal
+          # NSArray exception rather than anything wrong in the asset: the same
+          # commit built on the previous run and again on a retry. Left alone
+          # it turns publishing a release into a coin flip, so a failure is
+          # retried once from a clean derived data directory before being
+          # believed.
+          if ! build_once; then
+            echo "::warning::build failed, retrying once from a clean state"
+            rm -rf build
+            build_once
+          fi
 
       - name: Package
         working-directory: clients/mac
