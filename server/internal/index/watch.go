@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/schmidt-gabriel/homesync/server/internal/crypt"
 )
 
 // settleDelay is how long a path must stay quiet before we index it. A single
@@ -28,6 +30,7 @@ type Watcher struct {
 	ix   *Index
 	root string
 	skip SkipFunc
+	key  *crypt.Key
 
 	fs *fsnotify.Watcher
 
@@ -35,7 +38,7 @@ type Watcher struct {
 	timers map[string]*time.Timer
 }
 
-func NewWatcher(ix *Index, root string, skip SkipFunc) (*Watcher, error) {
+func NewWatcher(ix *Index, root string, skip SkipFunc, key *crypt.Key) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -44,6 +47,7 @@ func NewWatcher(ix *Index, root string, skip SkipFunc) (*Watcher, error) {
 		ix:     ix,
 		root:   root,
 		skip:   skip,
+		key:    key,
 		fs:     fsw,
 		timers: make(map[string]*time.Timer),
 	}, nil
@@ -232,11 +236,19 @@ func (w *Watcher) apply(ctx context.Context, rel, abs string) error {
 	if err != nil {
 		return err
 	}
-	if found && !prev.Deleted && prev.Size == info.Size() && prev.MTime == info.ModTime().UnixMilli() {
+	size, err := PlainSize(abs, info, w.key)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	if found && !prev.Deleted && prev.Size == size && prev.MTime == info.ModTime().UnixMilli() {
 		return nil
 	}
 
-	sum, err := HashFile(abs)
+	sum, err := crypt.HashFile(abs, w.key)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -246,13 +258,13 @@ func (w *Watcher) apply(ctx context.Context, rel, abs string) error {
 
 	// Content unchanged despite a touched mtime: do not burn a revision, or
 	// every `touch` would wake every connected machine for nothing.
-	if found && !prev.Deleted && prev.SHA256 == sum && prev.Size == info.Size() {
+	if found && !prev.Deleted && prev.SHA256 == sum && prev.Size == size {
 		return nil
 	}
 
 	_, err = w.ix.Upsert(ctx, Entry{
 		Path: rel, Type: TypeFile,
-		Size: info.Size(), MTime: info.ModTime().UnixMilli(), SHA256: sum,
+		Size: size, MTime: info.ModTime().UnixMilli(), SHA256: sum,
 	})
 	return err
 }

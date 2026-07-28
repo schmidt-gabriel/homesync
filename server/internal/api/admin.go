@@ -27,18 +27,32 @@ const sessionCookie = "homesync_admin"
 
 // admin holds the state for the management UI. It is entirely separate from
 // device tokens: a device token syncs files and can do nothing else, and the
-// admin password manages the server and cannot sync.
+// admin credentials manage the server and cannot sync.
 type admin struct {
+	user     string
 	password string
+	// open serves the whole UI with no login. Everything the UI can do — issue
+	// device tokens, browse the tree, empty the trash — is then available to
+	// anyone who can reach the port, so it is only ever set deliberately.
+	open bool
 
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
 }
 
-// EnableAdmin turns on the web UI. Without a password the routes are never
-// registered at all, so an unconfigured server exposes no management surface.
-func (s *Server) EnableAdmin(password string) {
-	s.admin = &admin{password: password, sessions: make(map[string]time.Time)}
+// EnableAdmin turns on the web UI. Without either a password or open being set
+// the routes are never registered at all, so an unconfigured server exposes no
+// management surface.
+func (s *Server) EnableAdmin(user, password string, open bool) {
+	if user == "" {
+		user = "admin"
+	}
+	s.admin = &admin{
+		user:     user,
+		password: password,
+		open:     open,
+		sessions: make(map[string]time.Time),
+	}
 	s.adminRoutes()
 }
 
@@ -127,6 +141,10 @@ func noCache(next http.Handler) http.Handler {
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.admin.open {
+			next(w, r)
+			return
+		}
 		cookie, err := r.Cookie(sessionCookie)
 		if err != nil || !s.admin.valid(cookie.Value) {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "admin session required")
@@ -137,22 +155,33 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 }
 
 type loginRequest struct {
+	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
-	var req loginRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "expected {\"password\": \"...\"}")
+	if s.admin.open {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 		return
 	}
 
-	// Constant-time so a wrong password cannot be found one character at a time.
-	if subtle.ConstantTimeCompare([]byte(req.Password), []byte(s.admin.password)) != 1 {
+	var req loginRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body",
+			"expected {\"username\": \"...\", \"password\": \"...\"}")
+		return
+	}
+
+	// Both compared in constant time, and both compared every time. Checking
+	// the username first and returning early would say which of the two was
+	// wrong, and would leak the username's length through the timing.
+	okUser := subtle.ConstantTimeCompare([]byte(req.Username), []byte(s.admin.user))
+	okPassword := subtle.ConstantTimeCompare([]byte(req.Password), []byte(s.admin.password))
+	if okUser&okPassword != 1 {
 		// A deliberate pause blunts online guessing without needing rate-limit
 		// state; the admin logs in rarely enough not to notice.
 		time.Sleep(500 * time.Millisecond)
-		writeError(w, http.StatusUnauthorized, "unauthorized", "wrong password")
+		writeError(w, http.StatusUnauthorized, "unauthorized", "wrong username or password")
 		return
 	}
 
@@ -189,7 +218,12 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(sessionCookie)
 	authenticated := err == nil && s.admin.valid(cookie.Value)
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": authenticated})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": authenticated || s.admin.open,
+		// So the page can skip the login form entirely rather than showing one
+		// that would accept anything.
+		"auth_required": !s.admin.open,
+	})
 }
 
 type overviewResponse struct {

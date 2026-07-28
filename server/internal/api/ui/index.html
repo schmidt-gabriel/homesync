@@ -111,16 +111,22 @@
 <div id="login" class="login" hidden>
   <div class="panel">
     <h2>HomeSync</h2>
-    <p class="muted" style="margin-top:0">Enter the admin password to manage this server.</p>
+    <p class="muted" style="margin-top:0">Sign in to manage this server.</p>
     <div id="login-error" class="notice error" hidden></div>
     <form id="login-form">
-      <input type="password" id="password" placeholder="Admin password" autocomplete="current-password" required>
+      <input type="text" id="username" placeholder="Username" autocomplete="username" required>
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password" required
+             style="margin-top:8px">
       <button class="action" type="submit" style="margin-top:10px; width:100%">Sign in</button>
     </form>
   </div>
 </div>
 
 <div id="app" hidden>
+  <div id="open-warning" class="notice error" hidden>
+    This server is running with no admin authentication. Anyone who can reach
+    it can issue device tokens, browse every file, and empty the trash.
+  </div>
   <header>
     <h1>HomeSync</h1>
     <span class="spacer"></span>
@@ -274,7 +280,7 @@ function cell(text, className) {
 function showLogin() {
   $("app").hidden = true;
   $("login").hidden = false;
-  $("password").focus();
+  $("username").focus();
 }
 
 function showApp() {
@@ -644,7 +650,10 @@ $("login-form").addEventListener("submit", async (event) => {
   try {
     await api("/admin/api/login", {
       method: "POST",
-      body: JSON.stringify({ password: $("password").value }),
+      body: JSON.stringify({
+        username: $("username").value,
+        password: $("password").value,
+      }),
     });
     $("password").value = "";
     showApp();
@@ -662,7 +671,15 @@ $("logout").addEventListener("click", async () => {
 $("refresh").addEventListener("click", refresh);
 
 (async function start() {
-  const { authenticated } = await api("/admin/api/session");
+  const { authenticated, auth_required } = await api("/admin/api/session");
+
+  // With authentication off there is nothing to sign out of, and a Sign out
+  // button that returns you straight to the same page is a lie.
+  if (!auth_required) {
+    $("logout").hidden = true;
+    $("open-warning").hidden = false;
+  }
+
   authenticated ? showApp() : showLogin();
 })();
 </script>

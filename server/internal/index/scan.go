@@ -2,10 +2,7 @@ package index
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -13,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/schmidt-gabriel/homesync/server/internal/crypt"
 )
 
 // ScanStats summarises what a reconciliation pass changed.
@@ -39,7 +38,9 @@ type SkipFunc func(rel string) bool
 // events under load and knows nothing about what happened while the process was
 // down, so a periodic full pass is the thing that actually guarantees the index
 // is true.
-func (ix *Index) Scan(ctx context.Context, root string, skip SkipFunc) (ScanStats, error) {
+// A non-nil key means the volume may hold encrypted files, and every size and
+// hash below is taken from the plaintext rather than from the bytes on disk.
+func (ix *Index) Scan(ctx context.Context, root string, skip SkipFunc, key *crypt.Key) (ScanStats, error) {
 	var stats ScanStats
 
 	onDisk := make(map[string]Entry)
@@ -111,10 +112,17 @@ func (ix *Index) Scan(ctx context.Context, root string, skip SkipFunc) (ScanStat
 			return nil
 		}
 
+		size, sizeErr := PlainSize(abs, info, key)
+		if sizeErr != nil {
+			slog.Warn("cannot size file", "path", clean, "err", sizeErr)
+			stats.Skipped++
+			return nil
+		}
+
 		onDisk[clean] = Entry{
 			Path:  clean,
 			Type:  TypeFile,
-			Size:  info.Size(),
+			Size:  size,
 			MTime: info.ModTime().UnixMilli(),
 		}
 		return nil
@@ -150,7 +158,7 @@ func (ix *Index) Scan(ctx context.Context, root string, skip SkipFunc) (ScanStat
 		}
 
 		if disk.Type == TypeFile {
-			sum, err := HashFile(filepath.Join(root, filepath.FromSlash(path)))
+			sum, err := crypt.HashFile(filepath.Join(root, filepath.FromSlash(path)), key)
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
@@ -204,20 +212,17 @@ const (
 	MetaLastScanStats = "last_scan_stats"
 )
 
-// HashFile returns the hex-encoded SHA-256 of a file's contents, streaming so
-// that a large file never lands in memory whole.
-func HashFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
+// PlainSize reports the length a client would see, which is not the length on
+// disk once the volume is encrypted.
+//
+// With no key configured the stat already has the answer, so an unencrypted
+// server does no extra work. With one, this costs a small read of the file's
+// header per file per scan — far less than the hash it lets us skip.
+func PlainSize(abs string, info os.FileInfo, key *crypt.Key) (int64, error) {
+	if key == nil {
+		return info.Size(), nil
 	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return crypt.SizeOf(abs, info)
 }
 
 // DefaultSkip keeps our own bookkeeping and the junk macOS scatters through

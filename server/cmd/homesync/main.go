@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/schmidt-gabriel/homesync/server/internal/api"
+	"github.com/schmidt-gabriel/homesync/server/internal/crypt"
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
 	"github.com/schmidt-gabriel/homesync/server/internal/store"
 	"github.com/schmidt-gabriel/homesync/server/internal/trash"
@@ -30,6 +31,9 @@ Usage:
   homesync device list                 List registered devices
   homesync device scope <name> <path>  Repoint a device at another subtree
   homesync device remove <name>        Revoke a device
+  homesync key generate                Print a new encryption key
+  homesync key encrypt                 Encrypt every file already on the volume
+  homesync key decrypt                 Decrypt every file back to plaintext
 
 Each device syncs one subtree of DATA_DIR, its scope, which defaults to a
 folder named after it. Point two devices at the same scope and they share
@@ -43,8 +47,16 @@ Environment:
   RESCAN_INTERVAL   Full reconciliation period   (default 15m)
   TOMBSTONE_DAYS    Days to keep delete markers  (default 90)
   TLS_CERT/TLS_KEY  Enable HTTPS when both set
+  ENCRYPTION_KEY    Encrypt file contents at rest (homesync key generate)
+  ADMIN_USER        Admin username               (default admin)
   ADMIN_PASSWORD    Enables the web admin UI at /
+  ADMIN_NO_AUTH     Serve the admin UI with no login at all
   LOG_LEVEL         debug|info|warn|error        (default info)
+
+Encryption applies to new writes. Turning it on leaves the files already on
+the volume as they are, readable either way; "homesync key encrypt" converts
+them. The server holds the key, so this protects a stolen disk or a copied
+backup, not a compromised server.
 `
 
 type config struct {
@@ -56,7 +68,10 @@ type config struct {
 	rescanInterval time.Duration
 	tlsCert        string
 	tlsKey         string
+	adminUser      string
 	adminPassword  string
+	adminNoAuth    bool
+	encryptionKey  string
 }
 
 func main() {
@@ -82,6 +97,8 @@ func run() error {
 		return serve(cfg)
 	case "device":
 		return deviceCommand(cfg, args)
+	case "key":
+		return keyCommand(cfg, args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil
@@ -114,8 +131,26 @@ func loadConfig() config {
 		rescanInterval: envDuration("RESCAN_INTERVAL", 15*time.Minute),
 		tlsCert:        os.Getenv("TLS_CERT"),
 		tlsKey:         os.Getenv("TLS_KEY"),
+		adminUser:      env("ADMIN_USER", "admin"),
 		adminPassword:  os.Getenv("ADMIN_PASSWORD"),
+		adminNoAuth:    envBool("ADMIN_NO_AUTH", false),
+		encryptionKey:  os.Getenv("ENCRYPTION_KEY"),
 	}
+}
+
+// encryptionKey turns the configured value into a key, or nil when there is
+// none. A key that will not parse stops the server rather than quietly
+// starting without encryption — that would write plaintext onto a volume the
+// operator believes is encrypted.
+func (c config) key() (*crypt.Key, error) {
+	if c.encryptionKey == "" {
+		return nil, nil
+	}
+	key, err := crypt.ParseKey(c.encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("ENCRYPTION_KEY: %w", err)
+	}
+	return &key, nil
 }
 
 func env(key, fallback string) string {
@@ -123,6 +158,21 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch v {
+	case "":
+		return fallback
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		slog.Warn("ignoring unparseable value", "key", key, "value", v)
+		return fallback
+	}
 }
 
 func envInt(key string, fallback int) int {
@@ -154,15 +204,24 @@ func openIndex(cfg config) (*index.Index, error) {
 }
 
 func serve(cfg config) error {
+	key, err := cfg.key()
+	if err != nil {
+		return err
+	}
+
 	ix, err := openIndex(cfg)
 	if err != nil {
 		return err
 	}
 	defer ix.Close()
 
-	st, err := store.New(cfg.dataDir)
+	st, err := store.New(cfg.dataDir, key)
 	if err != nil {
 		return err
+	}
+	if key != nil {
+		slog.Info("encrypting file contents at rest",
+			"note", "existing plaintext files stay readable; run `homesync key encrypt` to convert them")
 	}
 	tr, err := trash.New(st.Root())
 	if err != nil {
@@ -175,7 +234,7 @@ func serve(cfg config) error {
 	// Reconcile before serving: whatever happened while we were down is
 	// reflected in the index before any client can ask about it.
 	slog.Info("scanning data directory", "dir", st.Root())
-	stats, err := ix.Scan(ctx, st.Root(), index.DefaultSkip)
+	stats, err := ix.Scan(ctx, st.Root(), index.DefaultSkip, key)
 	if err != nil {
 		return fmt.Errorf("initial scan: %w", err)
 	}
@@ -185,7 +244,7 @@ func serve(cfg config) error {
 		return err
 	}
 
-	watcher, err := index.NewWatcher(ix, st.Root(), index.DefaultSkip)
+	watcher, err := index.NewWatcher(ix, st.Root(), index.DefaultSkip, key)
 	if err != nil {
 		return err
 	}
@@ -198,10 +257,18 @@ func serve(cfg config) error {
 	go runJanitor(ctx, ix, st, tr, cfg)
 
 	handler := api.New(ix, st, tr)
-	if cfg.adminPassword != "" {
-		handler.EnableAdmin(cfg.adminPassword)
-		slog.Info("admin UI enabled at /")
-	} else {
+	switch {
+	case cfg.adminNoAuth:
+		handler.EnableAdmin(cfg.adminUser, "", true)
+		// Loud, and deliberately not once-in-passing: everything the UI can do
+		// is now available to anyone who can reach the port.
+		slog.Warn("admin UI enabled at / with NO AUTHENTICATION",
+			"exposed", "device tokens, the file tree, and the trash",
+			"fix", "unset ADMIN_NO_AUTH and set ADMIN_PASSWORD")
+	case cfg.adminPassword != "":
+		handler.EnableAdmin(cfg.adminUser, cfg.adminPassword, false)
+		slog.Info("admin UI enabled at /", "user", cfg.adminUser)
+	default:
 		slog.Info("admin UI disabled (set ADMIN_PASSWORD to enable)")
 	}
 
@@ -274,7 +341,7 @@ func runJanitor(ctx context.Context, ix *index.Index, st *store.Store, tr *trash
 		case <-ticker.C:
 		}
 
-		stats, err := ix.Scan(ctx, st.Root(), index.DefaultSkip)
+		stats, err := ix.Scan(ctx, st.Root(), index.DefaultSkip, st.Key())
 		if err != nil {
 			slog.Warn("rescan failed", "err", err)
 		} else if stats.Added+stats.Updated+stats.Deleted > 0 {
