@@ -68,10 +68,15 @@ jobs:
       # Docker creates a missing bind-mount source as root, but the container
       # runs unprivileged as uid 1000, so it would be unable to write. Creating
       # the directories up front avoids that.
+      #
+      # The device's scope directory is created here too. The container would
+      # otherwise create it owned by uid 1000, and the checks that write
+      # straight into the volume run as the runner's user, which could not
+      # write there.
       - name: Prepare the volumes
         run: |
-          mkdir -p data config
-          chmod 777 data config
+          mkdir -p data/ci config
+          chmod -R 777 data config
 
       - name: Start the server
         run: |
@@ -86,9 +91,13 @@ jobs:
           docker compose logs
           exit 1
 
+      # The scope is passed explicitly rather than left to the default, so it
+      # cannot drift from HOMESYNC_SCOPE below. The suite needs to know it: a
+      # device only sees inside its own subtree, so the checks that write
+      # straight into the volume have to land there to be visible at all.
       - name: Register a device
         run: |
-          TOKEN=$(docker compose exec -T homesync homesync device add ci \
+          TOKEN=$(docker compose exec -T homesync homesync device add ci ci \
             | grep -oE '[A-Za-z0-9_-]{43}')
           if [ -z "$TOKEN" ]; then
             echo "could not register a device"
@@ -106,6 +115,7 @@ jobs:
         env:
           HOMESYNC_URL: http://localhost:8420
           HOMESYNC_DATA_DIR: ${{ github.workspace }}/data
+          HOMESYNC_SCOPE: ci
         run: go test -v ./...
 
       - name: Server logs
