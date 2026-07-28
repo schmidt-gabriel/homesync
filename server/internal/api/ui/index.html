@@ -196,7 +196,13 @@
 
     <section id="tab-trash" hidden>
       <div class="panel">
-        <h2>Deleted and overwritten content</h2>
+        <div class="row" style="justify-content:space-between; align-items:baseline">
+          <h2 style="margin:0">Deleted and overwritten content</h2>
+          <button class="ghost danger" id="empty-trash">Empty Trash</button>
+        </div>
+        <p class="muted" style="margin:8px 0 12px">
+          Kept for 30 days, then purged automatically. Emptying is immediate and cannot be undone.
+        </p>
         <div class="table-scroll">
           <table>
             <thead><tr><th>Original path</th><th class="num">Size</th><th>Discarded</th><th></th></tr></thead>
@@ -569,6 +575,25 @@ async function loadIgnore() {
   $("ignore-status").textContent = data.version ? `saved ${formatTime(data.version)}` : "using defaults";
 }
 loaders.ignore = loadIgnore;
+
+$("empty-trash").addEventListener("click", async () => {
+  const { items } = await api("/admin/api/trash");
+  if (items.length === 0) {
+    alert("The trash is already empty.");
+    return;
+  }
+  // Spelled out rather than a bare "are you sure": this is the one action in
+  // the panel with nothing behind it.
+  if (!confirm(
+    `Permanently delete ${items.length} item(s) from the trash?\n\n` +
+    "This is the last copy of anything deleted or overwritten. It cannot be undone.")) {
+    return;
+  }
+  const result = await api("/admin/api/trash", { method: "DELETE" });
+  loadTrash();
+  loadOverview();
+  alert(`Removed ${result.removed} item(s).`);
+});
 
 $("save-ignore").addEventListener("click", async () => {
   await api("/admin/api/ignore", {

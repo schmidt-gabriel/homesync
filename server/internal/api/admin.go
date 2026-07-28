@@ -94,6 +94,9 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin/api/files", s.requireAdmin(s.handleAdminBrowse))
 	s.mux.HandleFunc("GET /admin/api/trash", s.requireAdmin(s.handleListTrash))
 	s.mux.HandleFunc("POST /admin/api/trash/restore", s.requireAdmin(s.handleRestoreTrash))
+	// Admin only, and not exposed to devices: emptying the trash is the one
+	// thing here that cannot be undone.
+	s.mux.HandleFunc("DELETE /admin/api/trash", s.requireAdmin(s.handleAdminEmptyTrash))
 	s.mux.HandleFunc("GET /admin/api/ignore", s.requireAdmin(s.handleGetIgnore))
 	s.mux.HandleFunc("PUT /admin/api/ignore", s.requireAdmin(s.handlePutIgnore))
 
@@ -349,6 +352,17 @@ func (s *Server) handleAdminSetScope(w http.ResponseWriter, r *http.Request) {
 		"scope":  scope,
 		"notice": "the device will resync from scratch the next time it connects",
 	})
+}
+
+func (s *Server) handleAdminEmptyTrash(w http.ResponseWriter, r *http.Request) {
+	removed, err := s.trash.Empty()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "cannot empty the trash")
+		return
+	}
+
+	slog.Info("trash emptied from the admin page", "items", removed)
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
 func (s *Server) handleAdminBrowse(w http.ResponseWriter, r *http.Request) {

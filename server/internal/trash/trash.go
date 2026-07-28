@@ -143,6 +143,26 @@ func (t *Trash) Lookup(id string) (Item, error) {
 // AbsPath returns the on-disk location of a trash item.
 func (t *Trash) AbsPath(id string) string { return filepath.Join(t.dir, id) }
 
+// Empty discards everything, whatever its age, and reports how many items
+// went. This is the only irreversible operation in the server: it is offered
+// because a trash you cannot empty is just a disk leak with extra steps, and
+// it is deliberately not reachable with a device token.
+func (t *Trash) Empty() (int, error) {
+	items, err := t.List()
+	if err != nil {
+		return 0, err
+	}
+
+	removed := 0
+	for _, item := range items {
+		if err := os.Remove(filepath.Join(t.dir, item.ID)); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
+}
+
 // Purge deletes everything discarded before the cutoff and reports how many
 // items went.
 func (t *Trash) Purge(before time.Time) (int, error) {

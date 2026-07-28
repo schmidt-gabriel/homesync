@@ -24,7 +24,7 @@ struct HomeSyncApp: App {
         MenuBarExtra {
             MenuBarView(model: model)
         } label: {
-            Image(systemName: model.state.symbolName)
+            MenuBarIcon(state: model.state)
                 .accessibilityLabel("HomeSync: \(model.state.summary)")
         }
         .menuBarExtraStyle(.window)

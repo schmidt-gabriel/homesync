@@ -187,14 +187,43 @@ final class AppModel {
         NSWorkspace.shared.open(URL(fileURLWithPath: syncFolder))
     }
 
+    /// How long the syncing state stays on screen once it has been seen.
+    ///
+    /// A cycle against a server on the same network can finish in tens of
+    /// milliseconds. Reported honestly, the icon would flick between states too
+    /// fast to read, or be missed between polls entirely — so the indicator
+    /// would be permanently still while the thing it indicates is working. It
+    /// is held briefly so that "something is happening" is legible.
+    private static let syncingVisibleFor: Duration = .milliseconds(700)
+
+    private var syncingUntil: ContinuousClock.Instant?
+
     private func pollStatus(of engine: SyncEngine) async {
+        let clock = ContinuousClock()
+
         while !Task.isCancelled {
-            state = await engine.currentState
+            let actual = await engine.currentState
+
+            if case .syncing = actual {
+                syncingUntil = clock.now.advanced(by: Self.syncingVisibleFor)
+            }
+
+            // Anything other than idle wins over the latch: an error or a pause
+            // is more important than finishing the animation.
+            if case .idle = actual, let until = syncingUntil, clock.now < until {
+                state = .syncing
+            } else {
+                syncingUntil = nil
+                state = actual
+            }
+
             conflicts = await engine.conflicts
             fileCount = await engine.syncedFileCount
             isInsecure = await engine.isTransportInsecure
 
-            try? await Task.sleep(for: .seconds(1))
+            // Fast enough to catch a short cycle at all. It only reads a few
+            // properties off an actor, so the cost is negligible.
+            try? await Task.sleep(for: .milliseconds(150))
         }
     }
 
