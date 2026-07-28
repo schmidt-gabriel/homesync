@@ -149,6 +149,7 @@ const (
 // through every directory, which nobody wants replicated.
 const defaultIgnore = `# One pattern per line. Blank lines and # comments are ignored.
 # Syntax: gitignore-style globs matched against the path relative to the root.
+# A trailing slash restricts a rule to directories.
 
 .DS_Store
 ._*
@@ -160,6 +161,53 @@ Icon?
 .DocumentRevisions-V100
 *.swp
 ~$*
+
+# Dependency and build directories. These are large, they churn constantly,
+# and every one of them is reproducible from the source next to it, so syncing
+# them costs a great deal and is worth nothing.
+node_modules/
+bower_components/
+.pnpm-store/
+.yarn/cache/
+target/
+build/
+dist/
+out/
+.next/
+.nuxt/
+.svelte-kit/
+.parcel-cache/
+.turbo/
+.gradle/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.tox/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+vendor/
+Pods/
+Carthage/
+DerivedData/
+.build/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+.terraform/
+.stack-work/
+_build/
+deps/
+obj/
+bin/Debug/
+bin/Release/
+
+# Version control internals. A repository that syncs half-written objects
+# between machines is worse than one that does not sync at all: use the remote.
+.git/
+.hg/
+.svn/
 `
 
 type ignoreResponse struct {

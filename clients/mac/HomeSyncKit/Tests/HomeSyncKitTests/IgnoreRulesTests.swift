@@ -128,4 +128,31 @@ struct IgnoreRulesTests {
         let rules = IgnoreRules(rules: "\n\n   \n")
         #expect(!rules.excludes("notes.md"))
     }
+
+    @Test("dependency and build directories stay put")
+    func buildDirectoriesAreExcluded() {
+        // Mirrors what the server ships as defaults. These are the folders that
+        // make a sync folder unusable: huge, constantly rewritten, and entirely
+        // reproducible from the source sitting beside them.
+        let rules = IgnoreRules(rules: """
+            node_modules/
+            target/
+            .build/
+            __pycache__/
+            .git/
+            """)
+
+        #expect(rules.excludes("node_modules", isDirectory: true))
+        #expect(rules.excludes("node_modules/react/index.js"))
+        #expect(rules.excludes("app/node_modules/react/index.js"))
+        #expect(rules.excludes("rust-thing/target/debug/binary"))
+        #expect(rules.excludes("swift-thing/.build/release/x"))
+        #expect(rules.excludes("py/__pycache__/mod.cpython-313.pyc"))
+        #expect(rules.excludes("repo/.git/objects/ab/cdef"))
+
+        // The source next to them must still sync, which is the whole point.
+        #expect(!rules.excludes("app/src/index.js"))
+        #expect(!rules.excludes("rust-thing/src/main.rs"))
+        #expect(!rules.excludes("notes/targets-for-next-quarter.md"))
+    }
 }
