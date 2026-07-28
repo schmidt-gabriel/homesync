@@ -16,7 +16,7 @@ services:
       - TOMBSTONE_DAYS=${TOMBSTONE_DAYS:-90}
       - RESCAN_INTERVAL=${RESCAN_INTERVAL:-15m}
       # Encrypt file contents at rest. Generate one with:
-      #   docker compose run --rm homesync homesync key generate
+      #   docker compose run --rm homesync key generate
       # Without it the volume holds plaintext, which is the default.
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       # Set a password to enable the web admin UI at http://localhost:8420/
