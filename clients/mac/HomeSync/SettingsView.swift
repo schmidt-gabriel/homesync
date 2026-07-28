@@ -165,6 +165,16 @@ private struct GeneralSettings: View {
             } header: {
                 Text("Startup")
             }
+
+            Section {
+                LabeledContent("Version") {
+                    Text(AppModel.version)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            } header: {
+                Text("About")
+            }
         }
         .formStyle(.grouped)
         .onAppear { draftFolder = model.syncFolder }
