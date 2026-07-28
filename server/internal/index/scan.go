@@ -226,7 +226,9 @@ func DefaultSkip(rel string) bool {
 	for _, part := range strings.Split(rel, "/") {
 		switch part {
 		case ".trash", ".DS_Store", ".Spotlight-V100", ".Trashes",
-			".fseventsd", ".TemporaryItems", ".DocumentRevisions-V100":
+			".fseventsd", ".TemporaryItems", ".DocumentRevisions-V100",
+			// macOS writes this into any folder that has a custom icon.
+			"Icon\r":
 			return true
 		}
 		if strings.HasPrefix(part, "._") {

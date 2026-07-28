@@ -31,7 +31,7 @@ Three consequences worth internalising before implementing anything:
   contiguous.
 - **The server never merges.** When two machines edit from the same base, the
   loser's content is stored beside the winner's under a generated name. See
-  §6.
+  §7.
 
 ---
 
@@ -61,11 +61,43 @@ A missing, malformed or unknown token gets `401` with a
 
 ---
 
-## 3. Paths
+## 3. Scopes
+
+Each device syncs one subtree of the server's data directory, its **scope**,
+which defaults to a folder named after the device.
+
+This is invisible to a client. Every path it sends is resolved inside its scope
+and every path it receives has the scope stripped off, so a client always
+believes it is at the root. A client implementation needs no code for this at
+all.
+
+What it buys is that sharing becomes a decision rather than the only option:
+
+```
+/data/MacBook/     device "MacBook"
+/data/iMac/        device "iMac"
+/data/Shared/      devices "MacBook-shared" and "iMac-shared"
+```
+
+Two devices pointed at the same scope sync the same files, exactly as before
+scopes existed. Pointed at different ones, they never see each other.
+
+The scope directory itself is never an entry in `/v1/changes` — it is the
+device's root, and a client has no entry for its own root. It is also excluded
+before pagination, not filtered out afterwards, so a page is never empty while
+`more` is true.
+
+A device whose scope changes must resync from `since=0`: the revisions it
+remembers describe a tree it can no longer see.
+
+Scopes are administrative. There is no endpoint for a device to read or change
+its own; that happens through the CLI or the admin UI.
+
+## 4. Paths
 
 Paths appear in URLs after `/v1/files/` or `/v1/dirs/`, and in JSON as the
-`path` field. They are always **relative to the sync root**, slash-separated,
-with no leading slash: `projects/alpha/notes.md`.
+`path` field. They are always **relative to the device's scope**,
+slash-separated, with no leading slash: `projects/alpha/notes.md`.
 
 Rules the server enforces, and which a client must mirror:
 
@@ -98,7 +130,7 @@ refuses to follow them when reading. Clients should skip them too.
 
 ---
 
-## 4. Common shapes
+## 5. Common shapes
 
 ### Entry
 
@@ -125,7 +157,7 @@ Returned by `/v1/changes`. One path at one revision.
 | `sha256` | Hex, lowercase. Absent for directories and tombstones |
 | `rev` | Revision at which this path last changed |
 | `deleted` | `true` means tombstone: the path is gone |
-| `unsafe` | Present only when `true` (see §3) |
+| `unsafe` | Present only when `true` (see §4) |
 
 ### Error
 
@@ -148,7 +180,7 @@ may change. The full set of codes:
 | `not_found` | 404 | No such path, or no such trash item |
 | `is_directory` | 400/409 | Path is a directory, a file was expected |
 | `is_file` | 409 | Path is a file, a directory was expected |
-| `conflict` | 409 | Concurrent edit; body stored separately (§6) |
+| `conflict` | 409 | Concurrent edit; body stored separately (§7) |
 | `stale` | 409 | `X-Base-Rev` does not match; refetch first |
 | `case_collision` | 409 | Differs from an existing path only by case |
 | `not_empty` | 409 | Directory still has indexed children |
@@ -158,7 +190,7 @@ may change. The full set of codes:
 
 ---
 
-## 5. Endpoints
+## 6. Endpoints
 
 ### `GET /healthz`
 
@@ -217,7 +249,7 @@ Body is the raw file content. No multipart, no encoding.
 - `201 Created` if the path was absent or tombstoned.
 - `200 OK` if it existed and your `X-Base-Rev` matched.
 - `409 conflict` if it did not match. **The body is still stored**, under a
-  different name. See §6.
+  different name. See §7.
 
 Success body:
 
@@ -241,7 +273,7 @@ fetch the current version, decide, and try again.
 Deleting a directory that still has indexed children is `409 not_empty` —
 delete the children first.
 
-For files, the previous content goes to the trash (§7) before the tombstone is
+For files, the previous content goes to the trash (§8) before the tombstone is
 recorded.
 
 ### `PUT /v1/dirs/{path}`
@@ -324,7 +356,7 @@ must never be the operation that loses data.
 
 ---
 
-## 6. Conflicts
+## 7. Conflicts
 
 Two machines edit `notes.md` from revision 40. The first `PUT` carries
 `X-Base-Rev: 40`, matches, and becomes revision 41. The second also carries
@@ -356,7 +388,7 @@ routine error.
 
 ---
 
-## 7. Trash
+## 8. Trash
 
 Before any overwrite and any delete, the previous content is moved (not copied,
 so it is instant and cannot half-succeed) into a retention area. It is purged
@@ -370,7 +402,7 @@ and must resync from `since=0`.
 
 ---
 
-## 8. Writing a client
+## 9. Writing a client
 
 The recommended loop, and the failure modes worth knowing about.
 

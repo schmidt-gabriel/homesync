@@ -28,6 +28,8 @@ type changesResponse struct {
 // the last revision it saw — and asks what happened after it. Deletions come
 // back as tombstones, so a machine that was offline learns about them too.
 func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
+	device, _ := DeviceFrom(r.Context())
+
 	since := int64(0)
 	if raw := r.URL.Query().Get("since"); raw != "" {
 		parsed, err := strconv.ParseInt(raw, 10, 64)
@@ -50,7 +52,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 
 	// Ask for one extra row to learn whether another page exists without a
 	// second count query.
-	entries, currentRev, err := s.index.Changes(r.Context(), since, limit+1)
+	entries, currentRev, err := s.index.Changes(r.Context(), device.Scope, since, limit+1)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "cannot read changes")
 		return
@@ -61,7 +63,9 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 		entries = entries[:limit]
 	}
 
+	// Paths go out relative to the device's scope, so a client never learns
+	// that it is not sitting at the root of the data directory.
 	writeJSON(w, http.StatusOK, changesResponse{
-		Changes: entries, CurrentRev: currentRev, More: more,
+		Changes: device.stripEntries(entries), CurrentRev: currentRev, More: more,
 	})
 }

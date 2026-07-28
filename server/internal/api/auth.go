@@ -19,6 +19,9 @@ import (
 type Device struct {
 	ID   string
 	Name string
+	// Scope is the subtree of the data directory this device syncs. Empty
+	// means the whole tree.
+	Scope string
 }
 
 type contextKey struct{ name string }
@@ -49,7 +52,8 @@ func NewToken() (string, error) {
 }
 
 // AddDevice registers a device and returns the one-time plaintext token.
-func AddDevice(ctx context.Context, db *sql.DB, name string) (string, error) {
+// The scope defaults to a directory named after the device.
+func AddDevice(ctx context.Context, db *sql.DB, name, scope string) (string, error) {
 	token, err := NewToken()
 	if err != nil {
 		return "", err
@@ -61,8 +65,8 @@ func AddDevice(ctx context.Context, db *sql.DB, name string) (string, error) {
 	id = id[:16]
 
 	_, err = db.ExecContext(ctx,
-		`INSERT INTO devices (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)`,
-		id, name, hashToken(token), time.Now().UnixMilli())
+		`INSERT INTO devices (id, name, token_hash, created_at, scope) VALUES (?, ?, ?, ?, ?)`,
+		id, name, hashToken(token), time.Now().UnixMilli(), scope)
 	if err != nil {
 		return "", err
 	}
@@ -72,7 +76,7 @@ func AddDevice(ctx context.Context, db *sql.DB, name string) (string, error) {
 // ListDevices returns every registered device, newest first.
 func ListDevices(ctx context.Context, db *sql.DB) ([]Device, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT id, name FROM devices ORDER BY created_at DESC`)
+		`SELECT id, name, scope FROM devices ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +85,7 @@ func ListDevices(ctx context.Context, db *sql.DB) ([]Device, error) {
 	devices := []Device{}
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.ID, &d.Name); err != nil {
+		if err := rows.Scan(&d.ID, &d.Name, &d.Scope); err != nil {
 			return nil, err
 		}
 		devices = append(devices, d)
@@ -89,7 +93,18 @@ func ListDevices(ctx context.Context, db *sql.DB) ([]Device, error) {
 	return devices, rows.Err()
 }
 
+// SetScope repoints a device at a different subtree. Pointing two devices at
+// the same one is what makes them share files.
+func SetScope(ctx context.Context, db *sql.DB, name, scope string) (int64, error) {
+	res, err := db.ExecContext(ctx, `UPDATE devices SET scope = ? WHERE name = ?`, scope, name)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // RemoveDevice revokes a device by name, returning how many were removed.
+// Its files are left alone: revoking access is not deleting data.
 func RemoveDevice(ctx context.Context, db *sql.DB, name string) (int64, error) {
 	res, err := db.ExecContext(ctx, `DELETE FROM devices WHERE name = ?`, name)
 	if err != nil {
@@ -108,8 +123,8 @@ func (s *Server) authenticate(ctx context.Context, header string) (Device, error
 	var d Device
 	var storedHash string
 	err := s.index.DB().QueryRowContext(ctx,
-		`SELECT id, name, token_hash FROM devices WHERE token_hash = ?`,
-		hashToken(token)).Scan(&d.ID, &d.Name, &storedHash)
+		`SELECT id, name, scope, token_hash FROM devices WHERE token_hash = ?`,
+		hashToken(token)).Scan(&d.ID, &d.Name, &d.Scope, &storedHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Device{}, errors.New("unknown token")
 	}

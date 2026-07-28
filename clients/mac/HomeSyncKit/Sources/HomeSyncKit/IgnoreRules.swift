@@ -26,6 +26,10 @@ public struct IgnoreRules: Sendable, Equatable {
     public static let platformNoise: [String] = [
         ".DS_Store",
         "._*",
+        // macOS writes this into any folder given a custom icon, including
+        // ours. Without it, branding the sync folder would push a stray file
+        // to every other machine.
+        "Icon\r",
         ".Spotlight-V100",
         ".Trashes",
         ".fseventsd",

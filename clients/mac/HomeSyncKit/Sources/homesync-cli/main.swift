@@ -62,8 +62,8 @@ do {
 }
 
 if await engine.isTransportInsecure {
-    log("warning: \(serverURL.scheme ?? "http") is not encrypted, so the device token "
-        + "travels in the clear. Fine on a trusted network, not beyond it.")
+    log("connection is unencrypted, which is expected on a home network; "
+        + "use https:// if this server is reachable from outside it")
 }
 
 if environment["HOMESYNC_ONCE"] != nil {

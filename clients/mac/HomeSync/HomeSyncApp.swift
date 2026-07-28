@@ -3,7 +3,19 @@ import SwiftUI
 
 @main
 struct HomeSyncApp: App {
-    @State private var model = AppModel()
+    @State private var model: AppModel
+
+    init() {
+        let model = AppModel()
+
+        // Started here, not from the menu's `.task`. With
+        // `.menuBarExtraStyle(.window)` the content view is only built when the
+        // popover is first opened, so starting there would leave a sync app
+        // that does not sync until you look at it.
+        model.start()
+
+        _model = State(initialValue: model)
+    }
 
     var body: some Scene {
         // MenuBarExtra is a Scene, so there is no NSStatusItem to manage by
@@ -20,10 +32,5 @@ struct HomeSyncApp: App {
         Settings {
             SettingsView(model: model)
         }
-    }
-
-    init() {
-        // A @State property wrapper cannot be touched before the scene exists,
-        // so the engine starts from the first body evaluation instead.
     }
 }

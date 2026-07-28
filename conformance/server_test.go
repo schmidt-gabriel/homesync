@@ -80,7 +80,7 @@ func testAuthentication(t *testing.T, srv *Server) {
 	t.Run("wrong scheme", func(t *testing.T) { unauthenticated(t, "Basic "+srv.Token) })
 }
 
-// ── §3 Path rules ────────────────────────────────────────────────────────────
+// ── §4 Path rules ────────────────────────────────────────────────────────────
 
 func testPathRules(t *testing.T, srv *Server) {
 	t.Run("dot segments rejected", func(t *testing.T) {
@@ -159,7 +159,7 @@ func testPathRules(t *testing.T, srv *Server) {
 		// case-insensitive volume by resolving to the legitimate lower-case
 		// file, which would report a failure that is not there.
 		if srv.DataDir != "" {
-			entries, err := os.ReadDir(srv.DataDir)
+			entries, err := os.ReadDir(srv.ScopedDir())
 			if err != nil {
 				t.Fatalf("read the data directory: %v", err)
 			}
@@ -185,7 +185,7 @@ func testPathRules(t *testing.T, srv *Server) {
 	})
 }
 
-// ── §5 Files ─────────────────────────────────────────────────────────────────
+// ── §6 Files ─────────────────────────────────────────────────────────────────
 
 func testFilesRoundTrip(t *testing.T, srv *Server) {
 	path := unique(t, "doc.txt")
@@ -248,7 +248,7 @@ func testFilesRoundTrip(t *testing.T, srv *Server) {
 	})
 }
 
-// ── §5 Changes ───────────────────────────────────────────────────────────────
+// ── §6 Changes ───────────────────────────────────────────────────────────────
 
 func testChanges(t *testing.T, srv *Server) {
 	t.Run("revisions increase and are reported", func(t *testing.T) {
@@ -323,7 +323,7 @@ func testChanges(t *testing.T, srv *Server) {
 	})
 }
 
-// ── §5 Directories ───────────────────────────────────────────────────────────
+// ── §6 Directories ───────────────────────────────────────────────────────────
 
 func testDirectories(t *testing.T, srv *Server) {
 	dir := unique(t, "folder")
@@ -371,7 +371,7 @@ func testDirectories(t *testing.T, srv *Server) {
 	})
 }
 
-// ── §6 Conflicts ─────────────────────────────────────────────────────────────
+// ── §7 Conflicts ─────────────────────────────────────────────────────────────
 
 // conflictName is the documented shape: <stem>.conflict-<device>-<stamp><ext>
 var conflictName = regexp.MustCompile(`\.conflict-[A-Za-z0-9-]+-\d{8}-\d{6}\.md$`)
@@ -426,7 +426,7 @@ func testConflicts(t *testing.T, srv *Server) {
 	})
 }
 
-// ── §5 Deletion ──────────────────────────────────────────────────────────────
+// ── §6 Deletion ──────────────────────────────────────────────────────────────
 
 func testDeletion(t *testing.T, srv *Server) {
 	path := unique(t, "doomed.txt")
@@ -469,7 +469,7 @@ func testDeletion(t *testing.T, srv *Server) {
 	})
 }
 
-// ── §7 Trash ─────────────────────────────────────────────────────────────────
+// ── §8 Trash ─────────────────────────────────────────────────────────────────
 
 type trashListing struct {
 	Items []struct {
@@ -553,7 +553,7 @@ func testTrash(t *testing.T, srv *Server) {
 	})
 }
 
-// ── §5 Ignore rules ──────────────────────────────────────────────────────────
+// ── §6 Ignore rules ──────────────────────────────────────────────────────────
 
 func testIgnoreRules(t *testing.T, srv *Server) {
 	t.Run("round-trips and versions", func(t *testing.T) {
@@ -584,7 +584,7 @@ func testIgnoreRules(t *testing.T, srv *Server) {
 	})
 }
 
-// ── §5 Events ────────────────────────────────────────────────────────────────
+// ── §6 Events ────────────────────────────────────────────────────────────────
 
 func testEvents(t *testing.T, srv *Server) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -667,7 +667,9 @@ func testOutOfBandChanges(t *testing.T, srv *Server) {
 	}
 
 	name := unique(t, "written-by-hand.txt")
-	abs := filepath.Join(srv.DataDir, name)
+	// Inside the device's scope: a file dropped at the root of the data
+	// directory is outside what this device syncs, and correctly invisible.
+	abs := filepath.Join(srv.ScopedDir(), name)
 
 	t.Run("a file written straight to the volume is indexed", func(t *testing.T) {
 		if err := os.WriteFile(abs, []byte("not via the API"), 0o644); err != nil {

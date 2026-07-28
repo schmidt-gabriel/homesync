@@ -93,6 +93,9 @@
   .notice { border-radius: 7px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
   .notice.warn { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); }
   .notice.error { background: var(--danger-soft); color: var(--danger); border: 1px solid var(--danger); }
+  /* For things worth stating once, not worth alarming about. */
+  .notice.info { color: var(--muted); border: 1px solid var(--border); }
+  .notice.info code { font-family: var(--mono); font-size: 12px; color: var(--text); }
   .crumbs { font-family: var(--mono); font-size: 13px; margin-bottom: 10px; }
   .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
   .crumbs a:hover { text-decoration: underline; }
@@ -128,9 +131,11 @@
   </header>
 
   <main>
-    <div id="insecure" class="notice warn" hidden>
-      Served over plain HTTP — device tokens and this password travel in the clear.
-      Fine on a trusted network; set <code>TLS_CERT</code> and <code>TLS_KEY</code> for anything else.
+    <!-- A home network is the point of this, so plain HTTP is the ordinary
+         setup and reads as a note rather than a warning. -->
+    <div id="insecure" class="notice info" hidden>
+      Serving over plain HTTP, which is the usual choice on a home network.
+      Set <code>TLS_CERT</code> and <code>TLS_KEY</code> if this server is reachable from outside it.
     </div>
 
     <nav>
@@ -153,9 +158,14 @@
       <div class="panel">
         <h2>Add a device</h2>
         <form id="device-form" class="row">
-          <input type="text" id="device-name" placeholder="e.g. MacBook Pro" style="flex:1; min-width:180px" required>
+          <input type="text" id="device-name" placeholder="e.g. MacBook Pro" style="flex:1; min-width:160px" required>
+          <input type="text" id="device-scope" placeholder="folder (default: from the name)" style="flex:1; min-width:160px">
           <button class="action" type="submit">Create</button>
         </form>
+        <p class="muted" style="margin-bottom:0">
+          Each device syncs one folder under the data directory. Give two devices the same
+          folder and they share those files; leave it blank for a folder named after the device.
+        </p>
         <div id="new-token" hidden>
           <p class="muted" style="margin-bottom:0">
             Copy this token into the app now — only its hash is stored, so it cannot be shown again.
@@ -167,7 +177,7 @@
         <h2>Registered devices</h2>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>Name</th><th>Last seen</th><th>Added</th><th></th></tr></thead>
+            <thead><tr><th>Name</th><th>Folder</th><th>Last seen</th><th></th></tr></thead>
             <tbody id="device-rows"></tbody>
           </table>
         </div>
@@ -321,7 +331,7 @@ async function loadOverview() {
     ["Current revision", String(data.stats.current_rev)],
     ["Delete markers", `${data.stats.tombstones} (pruned after 90 days)`],
     ["Last full scan", `${formatTime(data.last_scan_at)}${data.last_scan_info ? ` · ${data.last_scan_info}` : ""}`],
-    ["Transport", data.secure ? "HTTPS" : "plain HTTP"],
+    ["Transport", data.secure ? "HTTPS" : "plain HTTP (local network)"],
   ];
   const detailHost = $("overview-details");
   detailHost.replaceChildren();
@@ -349,6 +359,15 @@ async function loadDevices() {
     return;
   }
 
+  // Devices sharing a folder are worth seeing at a glance, since that is the
+  // whole mechanism for syncing the same files to more than one machine.
+  const shared = new Set();
+  const seen = new Set();
+  for (const device of devices) {
+    if (seen.has(device.scope)) shared.add(device.scope);
+    seen.add(device.scope);
+  }
+
   for (const device of devices) {
     const tr = document.createElement("tr");
 
@@ -358,18 +377,52 @@ async function loadDevices() {
     dot.className = "dot" + (Date.now() - device.last_seen < 3_600_000 ? "" : " off");
     nameCell.append(dot, document.createTextNode(device.name));
 
+    const scopeCell = document.createElement("td");
+    scopeCell.className = "path";
+    const scopeText = document.createElement("span");
+    scopeText.textContent = device.scope || "(whole tree)";
+    scopeCell.append(scopeText);
+    if (shared.has(device.scope)) {
+      const badge = document.createElement("span");
+      badge.className = "muted";
+      badge.style.marginLeft = "6px";
+      badge.textContent = "shared";
+      scopeCell.append(badge);
+    }
+    const edit = document.createElement("button");
+    edit.className = "ghost";
+    edit.style.marginLeft = "8px";
+    edit.textContent = "Change";
+    edit.addEventListener("click", async () => {
+      const next = prompt(
+        `Folder for "${device.name}". Another device pointed here shares these files.`,
+        device.scope);
+      if (next === null) return;
+      try {
+        const result = await api(`/admin/api/devices/${encodeURIComponent(device.name)}/scope`, {
+          method: "PUT",
+          body: JSON.stringify({ scope: next }),
+        });
+        alert(result.notice);
+        loadDevices();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    scopeCell.append(edit);
+
     const actionCell = document.createElement("td");
     const revoke = document.createElement("button");
     revoke.className = "ghost danger";
     revoke.textContent = "Revoke";
     revoke.addEventListener("click", async () => {
-      if (!confirm(`Revoke "${device.name}"? That machine stops syncing immediately.`)) return;
+      if (!confirm(`Revoke "${device.name}"? That machine stops syncing immediately. Its files are kept.`)) return;
       await api(`/admin/api/devices/${encodeURIComponent(device.name)}`, { method: "DELETE" });
       loadDevices();
     });
     actionCell.append(revoke);
 
-    tr.append(nameCell, cell(formatTime(device.last_seen)), cell(formatTime(device.created_at)), actionCell);
+    tr.append(nameCell, scopeCell, cell(formatTime(device.last_seen)), actionCell);
     host.append(tr);
   }
 }
@@ -380,14 +433,16 @@ $("device-form").addEventListener("submit", async (event) => {
   const name = $("device-name").value.trim();
   if (!name) return;
 
+  const scope = $("device-scope").value.trim();
   const result = await api("/admin/api/devices", {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(scope ? { name, scope } : { name }),
   });
 
   $("token-value").textContent = result.token;
   $("new-token").hidden = false;
   $("device-name").value = "";
+  $("device-scope").value = "";
   loadDevices();
 });
 

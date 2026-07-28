@@ -77,7 +77,11 @@ CREATE TABLE IF NOT EXISTS devices (
     name       TEXT NOT NULL,
     token_hash TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    last_seen  INTEGER
+    last_seen  INTEGER,
+    -- The subtree of the data directory this device syncs. Point two devices
+    -- at the same scope and they share those files; that is how the
+    -- multi-machine case is expressed rather than being the default.
+    scope      TEXT NOT NULL DEFAULT ''
 );
 
 INSERT OR IGNORE INTO meta(key, value) VALUES ('current_rev', '0');
@@ -176,15 +180,37 @@ func (ix *Index) Lookup(ctx context.Context, path string) (Entry, bool, error) {
 // current revision. Tombstones are included: that is how a client that was
 // offline learns what disappeared.
 //
+// An empty scope covers the whole tree; otherwise only paths inside it are
+// returned, still carrying their full paths. Translating those to be relative
+// to the scope is the API layer's job.
+//
+// The revision counter stays global rather than per scope. Filtering by scope
+// and by `rev > since` together is still correct, and one counter means a
+// device that later has its scope widened does not have to resync from zero.
+//
 // A limit of 0 means no limit.
-func (ix *Index) Changes(ctx context.Context, since int64, limit int) ([]Entry, int64, error) {
+func (ix *Index) Changes(ctx context.Context, scope string, since int64, limit int) ([]Entry, int64, error) {
 	current, err := ix.CurrentRev(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	query := `SELECT ` + entryColumns + ` FROM files WHERE rev > ? ORDER BY rev ASC`
+	query := `SELECT ` + entryColumns + ` FROM files WHERE rev > ?`
 	args := []any{since}
+
+	if scope != "" {
+		// Strictly inside the scope. The scope directory itself is the device's
+		// root, and a client has no entry for its own root.
+		//
+		// This has to be part of the query, not a filter applied to the result.
+		// Dropping rows afterwards would let a page come back empty while
+		// `more` was true, and the documented paging rule — ask again from the
+		// last entry's revision — has no last entry to use.
+		query += ` AND path LIKE ? || '/%'`
+		args = append(args, scope)
+	}
+
+	query += ` ORDER BY rev ASC`
 	if limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, limit)

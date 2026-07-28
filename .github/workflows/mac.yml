@@ -1,13 +1,12 @@
 name: macOS client
 
-# Path-gated, so this stays dormant until the client exists rather than
-# failing on every push in the meantime.
 on:
+  # No path filter on push. A release tag carries no changed paths of its own,
+  # so a filtered trigger would skip it and the release would never be
+  # published. Pull requests keep the filter, where it saves the most.
   push:
     branches: [main]
-    paths:
-      - 'clients/mac/**'
-      - '.github/workflows/mac.yml'
+    tags: ['v*']
   pull_request:
     paths:
       - 'clients/mac/**'
@@ -91,6 +90,9 @@ jobs:
   app:
     name: Build the app
     runs-on: macos-latest
+    # Needed to attach the build to a release on a tag.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -137,6 +139,22 @@ jobs:
           name: HomeSync-app
           path: clients/mac/HomeSync.zip
           if-no-files-found: error
+
+      # On a tag, the same verified zip becomes a release asset, which is what
+      # the Homebrew cask downloads. The sha256 is printed so the cask can be
+      # updated without downloading the file again to compute it.
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd clients/mac
+          echo "sha256: $(shasum -a 256 HomeSync.zip | cut -d' ' -f1)"
+          gh release create "${GITHUB_REF_NAME}" HomeSync.zip \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Unsigned build. Install with: brew install --cask --no-quarantine homesync" \
+            --repo "${GITHUB_REPOSITORY}" \
+            || gh release upload "${GITHUB_REF_NAME}" HomeSync.zip --clobber --repo "${GITHUB_REPOSITORY}"
 
   # The artifact this workflow produces is unsigned and unnotarised, so macOS
   # quarantines it on download and Gatekeeper refuses to open it. To run it:

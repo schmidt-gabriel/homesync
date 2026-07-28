@@ -31,9 +31,22 @@ type fileResponse struct {
 	Type   string `json:"type"`
 }
 
-// requestPath validates the path from the URL.
+// requestPath validates the path from the URL and resolves it inside the
+// authenticated device's scope. Every handler goes through this, so a device
+// cannot name a path outside its own subtree even by accident.
 func requestPath(r *http.Request) (string, error) {
-	return index.CleanPath(r.PathValue("path"))
+	device, _ := DeviceFrom(r.Context())
+	return device.resolve(r.PathValue("path"))
+}
+
+// responsePath turns an index path back into what the device should see.
+func responsePath(r *http.Request, path string) string {
+	device, _ := DeviceFrom(r.Context())
+	relative, ok := device.strip(path)
+	if !ok {
+		return path
+	}
+	return relative
 }
 
 // parseBaseRev reads X-Base-Rev. Absent means "I believe this path does not
@@ -154,11 +167,11 @@ func (s *Server) handlePutFile(w http.ResponseWriter, r *http.Request) {
 			errorResponse: errorResponse{
 				Error: "conflict",
 				Message: fmt.Sprintf("path changed since rev %d (now %d); body stored as %q",
-					baseRev, got, conflictPath),
-				Conflict: conflictPath,
+					baseRev, got, responsePath(r, conflictPath)),
+				Conflict: responsePath(r, conflictPath),
 			},
 			fileResponse: fileResponse{
-				Path: conflictPath, Rev: rev, Size: result.Size,
+				Path: responsePath(r, conflictPath), Rev: rev, Size: result.Size,
 				SHA256: result.SHA256, MTime: result.MTime, Type: index.TypeFile,
 			},
 		})
@@ -184,7 +197,7 @@ func (s *Server) handlePutFile(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(w, status, fileResponse{
-		Path: rel, Rev: rev, Size: result.Size,
+		Path: responsePath(r, rel), Rev: rev, Size: result.Size,
 		SHA256: result.SHA256, MTime: result.MTime, Type: index.TypeFile,
 	})
 }
@@ -238,7 +251,8 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, fileResponse{Path: rel, Rev: rev, Type: entry.Type})
+	writeJSON(w, http.StatusOK, fileResponse{
+		Path: responsePath(r, rel), Rev: rev, Type: entry.Type})
 }
 
 func (s *Server) handlePutDir(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +273,8 @@ func (s *Server) handlePutDir(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Already a directory: creating it again is a no-op, not an error.
-		writeJSON(w, http.StatusOK, fileResponse{Path: rel, Rev: entry.Rev, Type: index.TypeDir})
+		writeJSON(w, http.StatusOK, fileResponse{
+			Path: responsePath(r, rel), Rev: entry.Rev, Type: index.TypeDir})
 		return
 	}
 
@@ -287,7 +302,8 @@ func (s *Server) handlePutDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, fileResponse{
-		Path: rel, Rev: rev, Type: index.TypeDir, MTime: info.ModTime().UnixMilli(),
+		Path: responsePath(r, rel), Rev: rev, Type: index.TypeDir,
+		MTime: info.ModTime().UnixMilli(),
 	})
 }
 

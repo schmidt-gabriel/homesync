@@ -78,6 +78,7 @@ final class AppModel {
             isConfigured = true
 
             createConvenienceSymlink(to: root)
+            brandSyncFolder(root)
 
             engineTask = Task { await engine.run() }
             pollTask = Task { [weak self] in await self?.pollStatus(of: engine) }
@@ -150,10 +151,44 @@ final class AppModel {
     /// home folder makes the synced files easy to get at from a terminal or the
     /// Finder's Go menu.
     private func createConvenienceSymlink(to root: URL) {
-        let link = FileManager.default.homeDirectoryForCurrentUser.appending(path: "HomeSync")
+        let manager = FileManager.default
+        let link = manager.homeDirectoryForCurrentUser.appending(path: "HomeSync")
 
-        guard !FileManager.default.fileExists(atPath: link.path) else { return }
-        try? FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        // `fileExists` follows symlinks, so a link left pointing at an old sync
+        // folder reports as missing while still occupying the name — and the
+        // create then fails silently, leaving the user with a dead shortcut.
+        // Reading the link itself is the only way to tell the three cases
+        // apart: correct, stale, or something that is not a link at all.
+        let target = try? manager.destinationOfSymbolicLink(atPath: link.path)
+
+        if target != nil {
+            guard target != root.path else { return }
+            try? manager.removeItem(at: link)
+        } else if manager.fileExists(atPath: link.path) {
+            // A real file or folder lives here. It is the user's, not ours.
+            return
+        }
+
+        try? manager.createSymbolicLink(at: link, withDestinationURL: root)
+    }
+
+    /// Gives the sync folder the app's icon, so it is recognisable in the
+    /// Finder the way Dropbox's and Drive's folders are.
+    ///
+    /// This is as far as an ordinary app can go towards looking built in. A
+    /// real entry in the Finder sidebar is not something an app can add:
+    /// `LSSharedFileList`, the old API for it, crashes outright on current
+    /// macOS, and the sidebar's data store is protected by TCC. Drive and
+    /// OneDrive get their entry by being File Provider extensions, which is a
+    /// different architecture rather than an extra call. Until then, the user
+    /// drags the folder to the sidebar once.
+    private func brandSyncFolder(_ root: URL) {
+        // Asking the workspace for our own bundle's icon, rather than looking
+        // the asset up by name: the icon is compiled by Icon Composer into a
+        // form `NSImage(named:)` does not resolve, and this works whatever
+        // format it was authored in.
+        let icon = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+        NSWorkspace.shared.setIcon(icon, forFile: root.path, options: [])
     }
 }
 

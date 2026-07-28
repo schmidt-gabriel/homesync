@@ -39,15 +39,16 @@ private struct ServerSettings: View {
                 Text("Connection")
             }
 
+            // HomeSync is built for a home network, so plain HTTP is the
+            // ordinary case and gets stated plainly rather than flagged. The
+            // one thing worth saying is where the assumption stops holding.
             if !draftURL.isEmpty, !draftURL.lowercased().hasPrefix("https") {
                 Label(
-                    """
-                    Without HTTPS the token is readable by anything on the network path. \
-                    Fine on a trusted network, not beyond it.
-                    """,
-                    systemImage: "exclamationmark.triangle")
+                    "Unencrypted, which is fine on your own network. Use https:// "
+                        + "if this server is reachable from outside it.",
+                    systemImage: "house")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.secondary)
             }
 
             Section {

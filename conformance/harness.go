@@ -30,6 +30,10 @@ type Server struct {
 	// Empty when testing a server we did not launch, which is why the tests
 	// that write straight to the volume skip in that case.
 	DataDir string
+	// Scope is the subtree the test device syncs. Paths in the protocol are
+	// relative to it, so tests never mention it — except the ones that write
+	// straight to the volume, which have to land inside it to be visible.
+	Scope string
 
 	client *http.Client
 	stop   func()
@@ -51,6 +55,7 @@ func StartServer(t *testing.T) *Server {
 			BaseURL: strings.TrimSuffix(url, "/"),
 			Token:   token,
 			DataDir: os.Getenv("HOMESYNC_DATA_DIR"),
+			Scope:   os.Getenv("HOMESYNC_SCOPE"),
 			client:  client,
 			stop:    func() {},
 		}
@@ -80,6 +85,7 @@ func StartServer(t *testing.T) *Server {
 
 	// Mint the token before starting the server: the CLI and the server both
 	// open the same SQLite file, and doing it first avoids any contention.
+	const scope = "conformance"
 	token := addDevice(t, binary, env, "conformance")
 
 	port := freePort(t)
@@ -97,6 +103,7 @@ func StartServer(t *testing.T) *Server {
 		BaseURL: "http://" + addr,
 		Token:   token,
 		DataDir: dataDir,
+		Scope:   scope,
 		client:  client,
 		stop: func() {
 			if cmd.Process != nil {
@@ -177,6 +184,18 @@ func freePort(t *testing.T) int {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port
+}
+
+// ScopedDir is where this device's files actually live on the server's disk.
+// Everything the protocol says is relative to it.
+func (s *Server) ScopedDir() string {
+	if s.DataDir == "" {
+		return ""
+	}
+	if s.Scope == "" {
+		return s.DataDir
+	}
+	return filepath.Join(s.DataDir, s.Scope)
 }
 
 func (s *Server) waitHealthy(t *testing.T) {
@@ -276,7 +295,7 @@ func (s *Server) Delete(t *testing.T, path string, baseRev int64) Response {
 		"X-Base-Rev", strconv.FormatInt(baseRev, 10))
 }
 
-// Entry mirrors the Entry shape in docs/PROTOCOL.md §4.
+// Entry mirrors the Entry shape in docs/PROTOCOL.md §5.
 type Entry struct {
 	Path    string `json:"path"`
 	Type    string `json:"type"`

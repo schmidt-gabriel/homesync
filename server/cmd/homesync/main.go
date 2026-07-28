@@ -26,9 +26,14 @@ const usage = `homesync — file sync server
 
 Usage:
   homesync serve                 Run the server (default)
-  homesync device add <name>     Register a device, printing its token once
-  homesync device list           List registered devices
-  homesync device remove <name>  Revoke a device
+  homesync device add <name> [scope]   Register a device, printing its token once
+  homesync device list                 List registered devices
+  homesync device scope <name> <path>  Repoint a device at another subtree
+  homesync device remove <name>        Revoke a device
+
+Each device syncs one subtree of DATA_DIR, its scope, which defaults to a
+folder named after it. Point two devices at the same scope and they share
+those files.
 
 Environment:
   DATA_DIR          Directory to sync            (default /data)
@@ -218,8 +223,11 @@ func serve(cfg config) error {
 		if useTLS {
 			err = srv.ListenAndServeTLS(cfg.tlsCert, cfg.tlsKey)
 		} else {
-			slog.Warn("serving plain HTTP — bearer tokens travel in the clear; " +
-				"set TLS_CERT/TLS_KEY or keep this on a trusted network")
+			// A home network is what this is for, so plain HTTP is the normal
+			// case and gets stated once at info level. Logging it as a warning
+			// on every start trains people to ignore warnings.
+			slog.Info("serving plain HTTP, suitable for a trusted local network; " +
+				"set TLS_CERT and TLS_KEY if this is reachable from outside it")
 			err = srv.ListenAndServe()
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -309,12 +317,36 @@ func deviceCommand(cfg config, args []string) error {
 			return errors.New("device add: missing name")
 		}
 		name := args[1]
-		token, err := api.AddDevice(ctx, ix.DB(), name)
+
+		scope := api.DefaultScope(name)
+		if len(args) > 2 {
+			validated, err := api.ValidateScope(args[2])
+			if err != nil {
+				return err
+			}
+			scope = validated
+		}
+
+		token, err := api.AddDevice(ctx, ix.DB(), name, scope)
 		if err != nil {
 			return err
 		}
+
+		// Created now so the folder is there to see, rather than appearing
+		// only once the device uploads something.
+		if scope != "" {
+			if err := os.MkdirAll(filepath.Join(cfg.dataDir, scope), 0o755); err != nil {
+				return fmt.Errorf("create scope directory: %w", err)
+			}
+		}
+
+		where := scope
+		if where == "" {
+			where = "(the whole data directory)"
+		}
 		// Printed once and never stored — only its hash goes to the database.
-		fmt.Printf("Device %q registered.\n\nToken (shown once, store it now):\n\n  %s\n\n", name, token)
+		fmt.Printf("Device %q registered, syncing %s.\n\nToken (shown once, store it now):\n\n  %s\n\n",
+			name, where, token)
 		return nil
 
 	case "list":
@@ -327,8 +359,36 @@ func deviceCommand(cfg config, args []string) error {
 			return nil
 		}
 		for _, d := range devices {
-			fmt.Printf("%s  %s\n", d.ID, d.Name)
+			scope := d.Scope
+			if scope == "" {
+				scope = "(whole tree)"
+			}
+			fmt.Printf("%s  %-24s %s\n", d.ID, d.Name, scope)
 		}
+		return nil
+
+	case "scope":
+		if len(args) < 3 {
+			return errors.New("device scope: expected <name> <path>")
+		}
+		scope, err := api.ValidateScope(args[2])
+		if err != nil {
+			return err
+		}
+		updated, err := api.SetScope(ctx, ix.DB(), args[1], scope)
+		if err != nil {
+			return err
+		}
+		if updated == 0 {
+			return fmt.Errorf("no device named %q", args[1])
+		}
+		if scope != "" {
+			if err := os.MkdirAll(filepath.Join(cfg.dataDir, scope), 0o755); err != nil {
+				return fmt.Errorf("create scope directory: %w", err)
+			}
+		}
+		fmt.Printf("Device %q now syncs %q.\n", args[1], scope)
+		fmt.Println("It will resync from scratch the next time it connects.")
 		return nil
 
 	case "remove":

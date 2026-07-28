@@ -12,12 +12,6 @@ struct MenuBarView: View {
 
             Divider().padding(.vertical, 8)
 
-            if model.isInsecure {
-                warning(
-                    "This server is not using HTTPS, so the device token travels in the clear.",
-                    systemImage: "lock.open")
-            }
-
             if !model.conflicts.isEmpty {
                 conflictList
             }
@@ -51,7 +45,13 @@ struct MenuBarView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if model.isConfigured, case .idle = model.state {
-                    Text("\(model.fileCount) files")
+                    // HTTP on a home network is the expected setup, not a
+                    // problem, so it belongs here as a quiet note about which
+                    // connection is in use — not as a warning competing with
+                    // the sync status.
+                    Text(model.isInsecure
+                        ? "\(model.fileCount) files · local network"
+                        : "\(model.fileCount) files · encrypted")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -59,16 +59,6 @@ struct MenuBarView: View {
 
             Spacer()
         }
-    }
-
-    private func warning(_ message: String, systemImage: String) -> some View {
-        Label(message, systemImage: systemImage)
-            .font(.caption)
-            .foregroundStyle(.orange)
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-            .padding(.bottom, 8)
     }
 
     /// Conflicts get their own section rather than a log line: a conflict is

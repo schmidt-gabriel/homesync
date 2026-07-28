@@ -25,6 +25,24 @@ func (s *Server) handleListTrash(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "cannot read trash")
 		return
 	}
+
+	// A device sees only what it could have deleted, with paths relative to its
+	// own scope. The admin UI reaches this handler with no device attached, so
+	// the scope is empty there and it sees everything, which is what it is for.
+	device, isDevice := DeviceFrom(r.Context())
+	if isDevice && device.Scope != "" {
+		visible := make([]trash.Item, 0, len(items))
+		for _, item := range items {
+			relative, ok := device.strip(item.Path)
+			if !ok {
+				continue
+			}
+			item.Path = relative
+			visible = append(visible, item)
+		}
+		items = visible
+	}
+
 	writeJSON(w, http.StatusOK, trashResponse{Items: items})
 }
 
@@ -43,6 +61,16 @@ func (s *Server) handleRestoreTrash(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "no such trash item")
 		return
+	}
+
+	// The id encodes the original full path, so the item is restored where it
+	// came from. A device may only restore inside its own scope: without this,
+	// a valid id from another device's subtree would be a way to reach it.
+	if device, isDevice := DeviceFrom(r.Context()); isDevice && device.Scope != "" {
+		if _, ok := device.strip(item.Path); !ok {
+			writeError(w, http.StatusNotFound, "not_found", "no such trash item")
+			return
+		}
 	}
 
 	rel, err := index.CleanPath(item.Path)
@@ -93,7 +121,7 @@ func (s *Server) handleRestoreTrash(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, fileResponse{
-		Path: rel, Rev: rev, Size: info.Size(), SHA256: sum,
+		Path: responsePath(r, rel), Rev: rev, Size: info.Size(), SHA256: sum,
 		MTime: info.ModTime().UnixMilli(), Type: index.TypeFile,
 	})
 }
@@ -124,6 +152,7 @@ const defaultIgnore = `# One pattern per line. Blank lines and # comments are ig
 
 .DS_Store
 ._*
+Icon?
 .Spotlight-V100
 .Trashes
 .fseventsd

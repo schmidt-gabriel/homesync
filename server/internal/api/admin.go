@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -89,6 +90,7 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin/api/devices", s.requireAdmin(s.handleAdminListDevices))
 	s.mux.HandleFunc("POST /admin/api/devices", s.requireAdmin(s.handleAdminCreateDevice))
 	s.mux.HandleFunc("DELETE /admin/api/devices/{name}", s.requireAdmin(s.handleAdminDeleteDevice))
+	s.mux.HandleFunc("PUT /admin/api/devices/{name}/scope", s.requireAdmin(s.handleAdminSetScope))
 	s.mux.HandleFunc("GET /admin/api/files", s.requireAdmin(s.handleAdminBrowse))
 	s.mux.HandleFunc("GET /admin/api/trash", s.requireAdmin(s.handleListTrash))
 	s.mux.HandleFunc("POST /admin/api/trash/restore", s.requireAdmin(s.handleRestoreTrash))
@@ -222,13 +224,15 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 type adminDevice struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
+	Scope    string `json:"scope"`
 	LastSeen int64  `json:"last_seen"`
 	Created  int64  `json:"created_at"`
 }
 
 func (s *Server) handleAdminListDevices(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.index.DB().QueryContext(r.Context(),
-		`SELECT id, name, created_at, COALESCE(last_seen, 0) FROM devices ORDER BY created_at DESC`)
+		`SELECT id, name, scope, created_at, COALESCE(last_seen, 0)
+         FROM devices ORDER BY created_at DESC`)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "cannot list devices")
 		return
@@ -238,7 +242,7 @@ func (s *Server) handleAdminListDevices(w http.ResponseWriter, r *http.Request) 
 	devices := []adminDevice{}
 	for rows.Next() {
 		var d adminDevice
-		if err := rows.Scan(&d.ID, &d.Name, &d.Created, &d.LastSeen); err != nil {
+		if err := rows.Scan(&d.ID, &d.Name, &d.Scope, &d.Created, &d.LastSeen); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "cannot read devices")
 			return
 		}
@@ -250,6 +254,8 @@ func (s *Server) handleAdminListDevices(w http.ResponseWriter, r *http.Request) 
 
 type createDeviceRequest struct {
 	Name string `json:"name"`
+	// Optional. Defaults to a directory named after the device.
+	Scope *string `json:"scope"`
 }
 
 func (s *Server) handleAdminCreateDevice(w http.ResponseWriter, r *http.Request) {
@@ -259,15 +265,34 @@ func (s *Server) handleAdminCreateDevice(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	token, err := AddDevice(r.Context(), s.index.DB(), req.Name)
+	scope := DefaultScope(req.Name)
+	if req.Scope != nil {
+		validated, err := ValidateScope(*req.Scope)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_scope", err.Error())
+			return
+		}
+		scope = validated
+	}
+
+	token, err := AddDevice(r.Context(), s.index.DB(), req.Name, scope)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "cannot create device")
 		return
 	}
 
+	// Created up front so the folder is visible on the server straight away,
+	// rather than appearing only once the device happens to upload something.
+	if scope != "" {
+		if err := s.store.Mkdir(scope); err != nil {
+			slog.Warn("cannot create scope directory", "scope", scope, "err", err)
+		}
+	}
+
 	// The only time the plaintext token ever leaves the server. Only its hash
 	// is stored, so this response cannot be reproduced later.
-	writeJSON(w, http.StatusCreated, map[string]any{"name": req.Name, "token": token})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"name": req.Name, "token": token, "scope": scope})
 }
 
 func (s *Server) handleAdminDeleteDevice(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +307,48 @@ func (s *Server) handleAdminDeleteDevice(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+type scopeRequest struct {
+	Scope string `json:"scope"`
+}
+
+func (s *Server) handleAdminSetScope(w http.ResponseWriter, r *http.Request) {
+	var req scopeRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "expected {\"scope\": \"...\"}")
+		return
+	}
+
+	scope, err := ValidateScope(req.Scope)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+
+	updated, err := SetScope(r.Context(), s.index.DB(), r.PathValue("name"), scope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "cannot update the scope")
+		return
+	}
+	if updated == 0 {
+		writeError(w, http.StatusNotFound, "not_found", "no such device")
+		return
+	}
+
+	if scope != "" {
+		if err := s.store.Mkdir(scope); err != nil {
+			slog.Warn("cannot create scope directory", "scope", scope, "err", err)
+		}
+	}
+
+	// The device's view of the tree just changed underneath it, so it has to
+	// reconcile from scratch. Its own state database still points at the old
+	// scope's revisions, which is why this is worth stating in the response.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scope":  scope,
+		"notice": "the device will resync from scratch the next time it connects",
+	})
 }
 
 func (s *Server) handleAdminBrowse(w http.ResponseWriter, r *http.Request) {
