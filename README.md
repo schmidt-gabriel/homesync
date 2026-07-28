@@ -1,3 +1,7 @@
+<p align="center">
+  <img width="256" height="256" alt="appstore" src="https://github.com/user-attachments/assets/c0950cde-f461-4620-884f-dfbbef6d7f3b" />
+</p>
+
 # HomeSync
 
 File sync between your own machines, through a server you run.
