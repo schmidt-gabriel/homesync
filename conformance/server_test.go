@@ -698,3 +698,51 @@ func testOutOfBandChanges(t *testing.T, srv *Server) {
 
 // itoa keeps the assertions readable at the call sites.
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// ── §6 Content integrity ─────────────────────────────────────────────────────
+
+// TestContentIntegrity covers the header that turns a corrupt upload into a
+// refusal. A client reading a file an editor is still writing can send bytes
+// belonging to no version of it; without this the server would store them and
+// serve them to every other machine as the truth.
+func TestContentIntegrity(t *testing.T) {
+	srv := StartServer(t)
+
+	t.Run("a matching hash is accepted", func(t *testing.T) {
+		const content = "the real content"
+		sum := sha256.Sum256([]byte(content))
+
+		res := srv.Do(t, http.MethodPut, "/v1/files/"+unique(t, "good.txt"),
+			strings.NewReader(content),
+			"X-Base-Rev", "0",
+			"X-Content-SHA256", hex.EncodeToString(sum[:]))
+		requireStatus(t, res, http.StatusCreated, "PUT with a correct hash")
+	})
+
+	t.Run("a mismatched hash is refused and nothing is stored", func(t *testing.T) {
+		path := unique(t, "bad.txt")
+
+		res := srv.Do(t, http.MethodPut, "/v1/files/"+path,
+			strings.NewReader("the real content"),
+			"X-Base-Rev", "0",
+			"X-Content-SHA256", strings.Repeat("0", 64))
+		requireErrorCode(t, res, http.StatusUnprocessableEntity, "hash_mismatch",
+			"PUT whose body does not match its declared hash")
+
+		// Refusing after writing to a temporary file is fine; leaving that file
+		// behind is not, and the next rescan would resurrect it as real content.
+		requireErrorCode(t, srv.Get(t, path), http.StatusNotFound, "not_found",
+			"GET of a path whose upload was refused")
+
+		if srv.DataDir != "" {
+			if _, err := os.Lstat(filepath.Join(srv.ScopedDir(), path)); err == nil {
+				t.Errorf("a refused upload left %q on disk", path)
+			}
+		}
+	})
+
+	t.Run("the header is optional", func(t *testing.T) {
+		res := srv.Put(t, unique(t, "nohash.txt"), "content", 0)
+		requireStatus(t, res, http.StatusCreated, "PUT without the hash header")
+	})
+}

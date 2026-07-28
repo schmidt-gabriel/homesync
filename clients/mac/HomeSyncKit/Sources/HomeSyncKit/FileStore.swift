@@ -152,6 +152,43 @@ public struct FileStore: Sendable {
         FileManager.default.fileExists(atPath: url(for: path).path)
     }
 
+    /// Copies a file to a temporary location and returns where it landed.
+    ///
+    /// Everything that follows — hashing, uploading, recording what was sent —
+    /// must run against this copy, never the original. An editor writing the
+    /// file while it is being read produces bytes that belong to no version of
+    /// it: `URLSession.upload(fromFile:)` fixes the length when the request is
+    /// made and pads the body if the file shrinks underneath it. Measured on a
+    /// 4 MB file truncated to 5 bytes mid-upload, it still sent 4 MB, and the
+    /// difference arrives as trailing NULs.
+    ///
+    /// The copy is cheap on APFS, which clones rather than duplicates blocks.
+    /// The caller owns the result and must delete it.
+    public func snapshot(_ path: String) throws -> URL {
+        let source = url(for: path)
+        let destination = FileManager.default.temporaryDirectory
+            .appending(path: "homesync-upload-\(UUID().uuidString)")
+
+        try FileManager.default.copyItem(at: source, to: destination)
+        return destination
+    }
+
+    /// Streams a file at an absolute location through SHA-256.
+    public func hash(contentsOf url: URL) throws -> String {
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+
+            var hasher = SHA256()
+            while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        } catch {
+            throw FileStoreError.notReadable(url.path, error)
+        }
+    }
+
     /// Streams a file through SHA-256, so size is bounded by the buffer rather
     /// than by the file.
     public func hash(_ path: String) throws -> String {

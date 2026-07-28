@@ -146,8 +146,13 @@ public struct APIClient: Sendable {
     /// Throws `.conflict` when the server parked the content elsewhere because
     /// the path had moved on. That is not a failure to retry: it means both
     /// versions now exist and the next pull will bring them down.
+    /// - Parameter sha256: the hash of exactly these bytes. The server checks
+    ///   the body against it and refuses a mismatch, so a file that changed
+    ///   underneath the upload fails loudly instead of being stored corrupt.
     @discardableResult
-    public func upload(path: String, from file: URL, baseRev: Int64) async throws -> FileResponse {
+    public func upload(
+        path: String, from file: URL, baseRev: Int64, sha256: String? = nil
+    ) async throws -> FileResponse {
         guard let url = url(forEndpoint: "files", path: path) else {
             throw SyncError.invalidResponse("cannot build a URL for \(path)")
         }
@@ -155,6 +160,9 @@ public struct APIClient: Sendable {
         var request = self.request("PUT", url: url)
         request.setValue(String(baseRev), forHTTPHeaderField: "X-Base-Rev")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        if let sha256 {
+            request.setValue(sha256, forHTTPHeaderField: "X-Content-SHA256")
+        }
 
         let data: Data
         let response: URLResponse

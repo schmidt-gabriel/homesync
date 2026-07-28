@@ -185,6 +185,7 @@ may change. The full set of codes:
 | `case_collision` | 409 | Differs from an existing path only by case |
 | `not_empty` | 409 | Directory still has indexed children |
 | `not_regular` | 409 | Target exists but is not a regular file |
+| `hash_mismatch` | 422 | Body did not match `X-Content-SHA256`; nothing was stored |
 | `occupied` | 409 | Restore target already exists |
 | `internal` | 500 | Server-side failure |
 
@@ -245,6 +246,16 @@ Body is the raw file content. No multipart, no encoding.
 | Request header | Meaning |
 |---|---|
 | `X-Base-Rev` | The revision you believe is current for this path. Omit or send `0` to mean "I believe this path does not exist" |
+| `X-Content-SHA256` | Optional. The hash of exactly the bytes being sent. If it does not match what arrives, the upload is refused with `422 hash_mismatch` and nothing is stored |
+
+**Send the hash, and hash a snapshot rather than the live file.** This is not
+about the network, which is already checksummed. It is about the file changing
+while the client reads it. An editor saving over a file produces bytes that
+belong to no version of it, and a client that uploads straight from the live
+file can send them: `URLSession.upload(fromFile:)` on macOS fixes the content
+length when the request is made, and a file truncated from 4 MB to 5 bytes
+mid-upload is still sent as 4 MB, the remainder arriving as NULs. Copy the file
+first, hash the copy, upload the copy, and declare that hash.
 
 - `201 Created` if the path was absent or tombstoned.
 - `200 OK` if it existed and your `X-Base-Rev` matched.

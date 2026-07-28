@@ -279,4 +279,57 @@ struct SyncEngineTests {
         #expect(summary.deletedRemotely == 0)
         #expect(restarted.read("before.txt") == "content")
     }
+
+    @Test("a file rewritten during the sync never lands corrupted")
+    func fileRewrittenMidSyncIsNotCorrupted() async throws {
+        let machine = try TestMachine()
+
+        // Big enough that the upload cannot finish in one read, which is what
+        // gives the rewrite a window to land in the middle of it.
+        let original = String(repeating: "A", count: 4_000_000)
+        try machine.write("document.md", original)
+
+        // An editor saving over the file while it is being read. Before the
+        // snapshot, this produced a body padded to the old length: URLSession
+        // fixes the content length when the request is made, so a file that
+        // shrinks underneath it is sent with trailing NULs.
+        let rewriter = Task {
+            try? await Task.sleep(for: .milliseconds(15))
+            try? machine.write("document.md", "rewritten, much shorter")
+        }
+
+        _ = try? await machine.engine.syncOnce()
+        await rewriter.value
+
+        // Whichever version won, the server must hold that version exactly.
+        // A body that belongs to neither is the failure being guarded against.
+        try await machine.engine.syncOnce()
+        let stored = try await machine.server.read(machine.scoped("document.md"))
+
+        #expect(stored == original || stored == "rewritten, much shorter")
+        #expect(!stored.contains("\0"))
+        #expect(stored == machine.read("document.md"))
+    }
+
+    @Test("the server refuses a body that does not match its declared hash")
+    func serverRejectsMismatchedHash() async throws {
+        let machine = try TestMachine()
+
+        let temporary = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "mismatch-\(UUID().uuidString)")
+        try "the real content".write(to: temporary, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        // The backstop: a client that computed its hash from different bytes
+        // than it sent should be told, not quietly believed.
+        await #expect(throws: (any Error).self) {
+            try await machine.server.api.upload(
+                path: machine.scoped("mismatch.txt"), from: temporary, baseRev: 0,
+                sha256: String(repeating: "0", count: 64))
+        }
+
+        await #expect(throws: (any Error).self) {
+            try await machine.server.read(machine.scoped("mismatch.txt"))
+        }
+    }
 }

@@ -368,7 +368,21 @@ public actor SyncEngine {
                 continue
             }
 
-            let sha = try store.hash(path)
+            // Snapshot before doing anything else with it. A file being saved
+            // by an editor changes underneath a reader, and hashing one version
+            // while uploading another is how corruption gets in. Everything
+            // below describes this copy, which cannot change.
+            let snapshot: URL
+            do {
+                snapshot = try store.snapshot(path)
+            } catch {
+                // Vanished between the scan and now. The next cycle will see
+                // it gone and handle it as a deletion.
+                continue
+            }
+            defer { try? FileManager.default.removeItem(at: snapshot) }
+
+            let sha = try store.hash(contentsOf: snapshot)
 
             // Content identical despite a touched mtime. Record the new mtime
             // so we stop re-hashing it, but do not upload: a stray `touch`
@@ -380,7 +394,17 @@ public actor SyncEngine {
                 continue
             }
 
-            try await upload(path, file: file, sha: sha, baseRev: known?.rev ?? 0, into: &summary)
+            // The size recorded has to be the snapshot's, not the one the scan
+            // saw: if the file grew or shrank in between, the scan's figure
+            // describes bytes nobody uploaded.
+            let snapshotSize = (try? FileManager.default
+                .attributesOfItem(atPath: snapshot.path)[.size] as? Int64) ?? file.size
+            let sent = LocalFile(
+                path: path, type: .file, size: snapshotSize ?? file.size, mtime: file.mtime)
+
+            try await upload(
+                path, file: sent, from: snapshot, sha: sha,
+                baseRev: known?.rev ?? 0, into: &summary)
             done += 1
             report(.uploading, completed: done, total: pending + removals)
         }
@@ -390,11 +414,12 @@ public actor SyncEngine {
     }
 
     private func upload(
-        _ path: String, file: LocalFile, sha: String, baseRev: Int64,
+        _ path: String, file: LocalFile, from source: URL, sha: String, baseRev: Int64,
         into summary: inout SyncSummary
     ) async throws {
         do {
-            let response = try await api.upload(path: path, from: store.url(for: path), baseRev: baseRev)
+            let response = try await api.upload(
+                path: path, from: source, baseRev: baseRev, sha256: sha)
             try state.record(SyncedState(
                 path: path, type: .file, size: file.size,
                 mtime: file.mtime, sha256: sha, rev: response.rev))

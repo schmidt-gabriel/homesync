@@ -21,6 +21,17 @@ import (
 // rather than silently last-write-wins.
 const baseRevHeader = "X-Base-Rev"
 
+// contentHashHeader carries the SHA-256 the client computed for exactly the
+// bytes it meant to send. Optional, but a client that sends it gets its upload
+// rejected rather than stored if the two disagree.
+//
+// This is not about the network, which TCP and TLS already checksum. It is
+// about the file changing underneath the client while it was being read: an
+// editor saving over it produces bytes belonging to no version of the file,
+// and without this the server would store them and hand them to every other
+// machine as the truth.
+const contentHashHeader = "X-Content-SHA256"
+
 // fileResponse is returned by PUT and DELETE.
 type fileResponse struct {
 	Path   string `json:"path"`
@@ -307,11 +318,27 @@ func (s *Server) handlePutDir(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ErrHashMismatch means the body did not hash to what the client said it would.
+var ErrHashMismatch = errors.New("content hash mismatch")
+
 // storeFile writes a body to disk and records it, returning the assigned rev.
 func (s *Server) storeFile(r *http.Request, rel string, body io.Reader) (store.WriteResult, int64, error) {
 	result, err := s.store.Write(rel, body)
 	if err != nil {
 		return store.WriteResult{}, 0, err
+	}
+
+	// Checked after writing rather than before, because the body is a stream
+	// and hashing it first would mean holding the whole file in memory. The
+	// write went to a temporary file and was renamed into place, so undoing it
+	// is a delete.
+	if declared := r.Header.Get(contentHashHeader); declared != "" && declared != result.SHA256 {
+		if removeErr := s.store.Remove(rel); removeErr != nil {
+			slog.Error("cannot remove a file that failed its hash check",
+				"path", rel, "err", removeErr)
+		}
+		return store.WriteResult{}, 0, fmt.Errorf(
+			"%w: client declared %s, body hashed to %s", ErrHashMismatch, declared, result.SHA256)
 	}
 
 	rev, err := s.index.Upsert(r.Context(), index.Entry{
@@ -345,6 +372,8 @@ func (s *Server) moveToTrash(rel string) error {
 
 func (s *Server) writeStoreError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrHashMismatch):
+		writeError(w, http.StatusUnprocessableEntity, "hash_mismatch", err.Error())
 	case errors.Is(err, index.ErrCaseCollision):
 		writeError(w, http.StatusConflict, "case_collision", err.Error())
 	case errors.Is(err, store.ErrOutsideRoot), errors.Is(err, index.ErrInvalidPath):
