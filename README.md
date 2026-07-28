@@ -73,6 +73,64 @@ ADMIN_PASSWORD=something docker compose up -d
 Copy `.env.sample` to `.env`. Every value has a working default; see the sample
 for what each one does.
 
+## Installing the Mac client
+
+```bash
+brew install --cask schmidt-gabriel/tap/homesync
+xattr -dr com.apple.quarantine /Applications/HomeSync.app
+```
+
+The second line is not optional. The build is not signed with an Apple
+Developer ID, so macOS flags it as quarantined. Homebrew's `--no-quarantine`
+does not help: it stopped being a command-line flag, and setting it through
+`HOMEBREW_CASK_OPTS` did not prevent the flag either when tested.
+
+Then:
+
+1. **Register the Mac on the server** and copy the token it prints. It is shown
+   once and only its hash is stored, so it cannot be recovered later.
+
+   ```bash
+   docker compose exec homesync homesync device add "MacBook"
+   ```
+
+   The admin page does the same thing with a form, if you would rather.
+
+2. **Open HomeSync** from Applications. It has no Dock icon: look for the
+   circle in the menu bar.
+
+3. **Menu bar icon → Settings → Server.** Paste the address and the token, then
+   press Apply. It tells you whether it actually connected rather than just
+   saving.
+
+4. **General tab**, if you want the folder somewhere other than
+   `~/Library/CloudStorage/HomeSync`, and to start HomeSync at login.
+
+Files then sync both ways on their own: local edits go up within a second or so,
+and anything another machine changes arrives about as fast.
+
+### Adding a second Mac
+
+Repeat the above with a different device name. By default each device gets its
+own folder on the server and the two do not see each other. To make them sync
+the *same* files, give both the same folder: either pass it when registering,
+
+```bash
+docker compose exec homesync homesync device add "iMac" MacBook
+```
+
+or change it later from the Devices tab of the admin page. A device whose
+folder changes downloads everything again from scratch.
+
+### Building it yourself instead
+
+```bash
+cd clients/mac
+xcodebuild -project HomeSync.xcodeproj -scheme HomeSync -configuration Release \
+  -derivedDataPath build build
+cp -R build/Build/Products/Release/HomeSync.app /Applications/
+```
+
 ## A word on transport security
 
 The device token is a bearer credential: whoever holds it can read and write
