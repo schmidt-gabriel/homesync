@@ -152,6 +152,22 @@ public struct FileStore: Sendable {
         FileManager.default.fileExists(atPath: url(for: path).path)
     }
 
+    /// True when the path is a directory holding nothing at all.
+    ///
+    /// Deliberately counts hidden entries too: `.DS_Store` is not worth
+    /// preserving, but this is asked before deleting a directory, and being
+    /// wrong in that direction costs whatever else is in there.
+    public func isEmptyDirectory(_ path: String) throws -> Bool {
+        let target = url(for: path)
+        do {
+            return try FileManager.default
+                .contentsOfDirectory(atPath: target.path)
+                .isEmpty
+        } catch {
+            throw FileStoreError.notReadable(path, error)
+        }
+    }
+
     /// Copies a file to a temporary location and returns where it landed.
     ///
     /// Everything that follows — hashing, uploading, recording what was sent —

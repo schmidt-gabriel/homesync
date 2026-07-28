@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Everything the engine needs to run.
@@ -53,15 +54,36 @@ public struct Configuration: Sendable {
 
     /// One state database per sync root, keyed by a hash of its path so two
     /// roots on one machine cannot share, or corrupt, each other's record.
+    ///
+    /// The key is SHA-256 and **must not** be `hashValue`. Swift seeds its
+    /// hasher randomly per process, so `hashValue` gives a different answer on
+    /// every launch: the app came up, failed to find a state file it had itself
+    /// written minutes earlier, and started from an empty database — losing
+    /// `lastRev` and every recorded file, once per launch. That turns a normal
+    /// start into a full re-scan, a pull from revision zero, and a change set
+    /// in which every tombstone the server has ever issued looks like a fresh
+    /// instruction to delete a local file.
     public static func defaultStateURL(for root: URL) -> URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
 
-        let key = String(UInt64(bitPattern: Int64(root.standardizedFileURL.path.hashValue)), radix: 36)
-
         return support
             .appending(path: "HomeSync", directoryHint: .isDirectory)
-            .appending(path: "state-\(key).sqlite", directoryHint: .notDirectory)
+            .appending(path: "state-\(stateKey(for: root)).sqlite", directoryHint: .notDirectory)
+    }
+
+    /// A stable, filename-safe digest of a sync root's path.
+    ///
+    /// Symlinks are resolved first, so the same directory reached by two names
+    /// — `~/HomeSync` and the folder it points at — shares one record rather
+    /// than getting a second, empty one. `FileStore` resolves its root the same
+    /// way, and the two have to agree on what "this folder" means.
+    static func stateKey(for root: URL) -> String {
+        let path = root.resolvingSymlinksInPath().standardizedFileURL.path
+        return SHA256.hash(data: Data(path.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 }
 
