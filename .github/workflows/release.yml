@@ -64,3 +64,79 @@ jobs:
             --notes "$NOTES" \
             || gh release upload "${GITHUB_REF_NAME}" HomeSync.zip \
                  --repo "${GITHUB_REPOSITORY}" --clobber
+
+  # Updating the tap needs a credential the release job does not have:
+  # GITHUB_TOKEN is scoped to this repository and cannot push to another one.
+  # TAP_TOKEN is a fine-grained personal access token limited to the
+  # homebrew-tap repository with Contents: read and write. Without it this job
+  # is skipped and the cask is updated by hand, which is the previous
+  # behaviour rather than a failure.
+  tap:
+    name: Update the Homebrew tap
+    needs: publish
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.repository.private }}
+
+    steps:
+      - name: Check for the credential
+        id: check
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "TAP_TOKEN is not set; skipping. Update the cask by hand," \
+                 "or add the secret to automate it."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the tap
+        if: steps.check.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-tap
+          token: ${{ secrets.TAP_TOKEN }}
+          path: tap
+
+      # Taken from the published asset rather than from a local build, so the
+      # checksum describes the exact bytes Homebrew will download.
+      - name: Checksum the published asset
+        if: steps.check.outputs.ready == 'true'
+        id: asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" --pattern HomeSync.zip --output HomeSync.zip
+          echo "sha256=$(sha256sum HomeSync.zip | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Rewrite the cask
+        if: steps.check.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.asset.outputs.version }}
+          SHA256: ${{ steps.asset.outputs.sha256 }}
+        run: |
+          cd tap
+          # Anchored to the start of the line so nothing else in the file,
+          # such as a version mentioned in the caveats, is rewritten.
+          sed -i -E "s|^  version \".*\"|  version \"${VERSION}\"|" Casks/homesync.rb
+          sed -i -E "s|^  sha256 \".*\"|  sha256 \"${SHA256}\"|" Casks/homesync.rb
+          git diff --exit-code Casks/homesync.rb && echo "already up to date" && exit 0 || true
+          head -3 Casks/homesync.rb
+
+      - name: Commit and push
+        if: steps.check.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.asset.outputs.version }}
+        run: |
+          cd tap
+          if git diff --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Update HomeSync to ${VERSION}"
+          git push

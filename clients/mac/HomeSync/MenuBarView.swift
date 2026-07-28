@@ -66,6 +66,14 @@ struct MenuBarView: View {
             }
 
             Spacer()
+
+            // Top right, quiet enough to ignore and close enough to find: the
+            // answer to "which version are you running" should not need the
+            // Finder, but it is not what anyone opens this menu for.
+            Text(AppModel.version)
+                .font(.system(size: 9))
+                .foregroundStyle(.quaternary)
+                .textSelection(.enabled)
         }
     }
 
@@ -125,15 +133,6 @@ struct MenuBarView: View {
             MenuButton("Quit HomeSync", systemImage: "power") {
                 NSApplication.shared.terminate(nil)
             }
-
-            // Small and out of the way, but always reachable: the answer to
-            // "which version are you running" should not require the Finder.
-            Text("Version \(AppModel.version)")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 6)
-                .textSelection(.enabled)
         }
     }
 }
