@@ -51,10 +51,20 @@ final class AppModel {
 
     private(set) var connectionCheck: ConnectionCheck = .none
 
-    var launchesAtLogin: Bool {
-        get { SMAppService.mainApp.status == .enabled }
-        set { setLaunchAtLogin(newValue) }
-    }
+    /// Whether the app is registered to open at login.
+    ///
+    /// Stored, rather than read straight off `SMAppService.mainApp.status` in a
+    /// computed property. `@Observable` can only track its own storage: reading
+    /// a service outside the object changes nothing the view is observing, so
+    /// the toggle registered the login item and then went on drawing the value
+    /// from its last render — off. Only `refreshLaunchesAtLogin()` writes this,
+    /// and it writes what the service reports rather than what was asked of it.
+    private(set) var launchesAtLogin = false
+
+    /// Why the toggle did not do what it appears to have done, when that
+    /// happens. Registering can fail, and it can also succeed while leaving the
+    /// item off, which is indistinguishable from nothing happening at all.
+    private(set) var loginItemProblem: String?
 
     private var engine: SyncEngine?
     private var engineTask: Task<Void, Never>?
@@ -83,6 +93,8 @@ final class AppModel {
         serverURL = defaults.string(forKey: "serverURL") ?? ""
         syncFolder = defaults.string(forKey: "syncFolder") ?? Self.defaultFolder
         token = Keychain.readToken() ?? ""
+
+        refreshLaunchesAtLogin()
     }
 
     // MARK: - Lifecycle
@@ -242,16 +254,39 @@ final class AppModel {
 
     // MARK: - Login item
 
-    private func setLaunchAtLogin(_ enabled: Bool) {
+    func setLaunchesAtLogin(_ enabled: Bool) {
         do {
             if enabled {
                 try SMAppService.mainApp.register()
             } else {
                 try SMAppService.mainApp.unregister()
             }
+            refreshLaunchesAtLogin()
         } catch {
-            state = .failed("Cannot change the login item: \(error.localizedDescription)")
+            refreshLaunchesAtLogin()
+            loginItemProblem = "Cannot change the login item: \(error.localizedDescription)"
         }
+    }
+
+    /// Asks the service what the registration actually is, and republishes it.
+    ///
+    /// Worth calling whenever Settings appears, not only after the toggle:
+    /// System Settings › General › Login Items is the other place this changes,
+    /// and it can change there while the app is running.
+    func refreshLaunchesAtLogin() {
+        let status = SMAppService.mainApp.status
+        launchesAtLogin = status == .enabled
+
+        // `register()` returns without complaint when the user has switched the
+        // item off in System Settings, and the item stays off: the decision is
+        // remembered, and only they can reverse it, in that window.
+        loginItemProblem = status == .requiresApproval
+            ? "HomeSync was switched off in System Settings, so it has to be turned back on there."
+            : nil
+    }
+
+    func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 
 }

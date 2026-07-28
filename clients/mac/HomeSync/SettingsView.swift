@@ -160,8 +160,17 @@ private struct GeneralSettings: View {
             Section {
                 Toggle("Start HomeSync at login", isOn: Binding(
                     get: { model.launchesAtLogin },
-                    set: { model.launchesAtLogin = $0 }
+                    set: { model.setLaunchesAtLogin($0) }
                 ))
+
+                if let problem = model.loginItemProblem {
+                    Label(problem, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button("Open Login Items…") { model.openLoginItemsSettings() }
+                }
             } header: {
                 Text("Startup")
             }
@@ -177,7 +186,17 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { draftFolder = model.syncFolder }
+        .onAppear {
+            draftFolder = model.syncFolder
+            model.refreshLaunchesAtLogin()
+        }
+        // The settings window is kept alive once opened, so `onAppear` fires
+        // once and would not notice the login item being changed in System
+        // Settings in between.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshLaunchesAtLogin()
+        }
     }
 
     /// A typed path may well use `~`, and may have picked up whitespace from a
