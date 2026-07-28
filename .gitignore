@@ -16,3 +16,7 @@ DerivedData/
 clients/mac/HomeSyncKit/.build/
 clients/mac/build/
 clients/mac/verify/
+
+# Per-user Xcode state, which is not shared
+**/.swiftpm/xcode/**/xcuserdata/
+**/xcuserdata/
