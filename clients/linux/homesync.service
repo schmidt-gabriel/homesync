@@ -1,0 +1,51 @@
+# A user service, not a system one: it syncs one person's folder, with their
+# permissions, and has no business running as root.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp homesync.service ~/.config/systemd/user/
+#   systemctl --user edit homesync.service      # or write the file below
+#   systemctl --user enable --now homesync.service
+#   journalctl --user -u homesync -f
+#
+# The token goes in ~/.config/homesync/env, mode 600 — not in this file, which
+# ends up world-readable, and not on the command line, where anyone who can
+# list processes can read it:
+#
+#   HOMESYNC_URL=http://homelab.local:8420
+#   HOMESYNC_TOKEN=...
+#   HOMESYNC_ROOT=%h/HomeSync
+#
+# Add `loginctl enable-linger <user>` if the folder should keep syncing while
+# nobody is logged in.
+
+[Unit]
+Description=HomeSync file sync
+Documentation=https://github.com/schmidt-gabriel/homesync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/homesync/env
+ExecStart=/usr/local/bin/homesync-client
+
+# Restart on anything, including a clean exit: a clean exit here means it could
+# not reach the server at startup, which is a condition that passes.
+Restart=always
+RestartSec=10s
+
+# It needs the sync folder and its own state, and nothing else.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=read-write
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=default.target

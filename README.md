@@ -20,10 +20,11 @@ nothing: no client tracks any other client.
 ## Layout
 
 ```
-server/       Go server and its Docker image
-clients/mac/  macOS menu-bar client (Swift)
-docs/         PROTOCOL.md — the contract, and the source of truth
-conformance/  executable protocol test suite
+server/        Go server and its Docker image
+clients/mac/   macOS menu-bar client (Swift)
+clients/linux/ Linux daemon (Go)
+docs/          PROTOCOL.md — the contract, and the source of truth
+conformance/   executable protocol test suite
 ```
 
 ## Running it
@@ -131,6 +132,24 @@ xcodebuild -project HomeSync.xcodeproj -scheme HomeSync -configuration Release \
 cp -R build/Build/Products/Release/HomeSync.app /Applications/
 ```
 
+## Installing the Linux client
+
+One static binary and a systemd user unit. See
+[`clients/linux/README.md`](clients/linux/README.md).
+
+```bash
+cd clients/linux
+go build -o homesync-client ./cmd/homesync-client
+
+export HOMESYNC_URL=http://homelab.local:8420
+export HOMESYNC_TOKEN=...    # from `homesync device add <name>`
+./homesync-client
+```
+
+It was written against the protocol document rather than against the Mac
+client, and passes the same conformance suite. That is the whole argument for
+having written the protocol down before there was a second client.
+
 ## A word on transport security
 
 The device token is a bearer credential: whoever holds it can read and write
@@ -149,11 +168,15 @@ Windows cannot represent) and the recommended client loop, including the three
 mistakes that are easy to make.
 
 Prove the result against `conformance/` rather than against another client's
-behaviour.
+behaviour. `clients/linux/` is the worked example: point
+`HOMESYNC_CLIENT_CMD` at any binary that takes `HOMESYNC_URL`,
+`HOMESYNC_TOKEN` and `HOMESYNC_ROOT` from its environment and keeps syncing
+until it is killed.
 
 ## Development
 
 ```bash
 cd server && go test ./... && go vet ./...
+cd clients/linux && go test ./... && go vet ./...
 cd clients/mac/HomeSyncKit && swift test
 ```

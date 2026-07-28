@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -157,14 +158,40 @@ func startClient(t *testing.T, command string, srv *Server, root string) {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 
+	// Its own process group, so the whole thing can be signalled at the end.
+	//
+	// Killing cmd.Process alone reaches the shell and nothing else. Where /bin/sh
+	// execs the command that is the same process, which is why this looks fine on
+	// a Mac; where it forks — dash, so every Linux CI runner — the client survives
+	// its parent, keeps the test's stderr open, and `go test` sits for a further
+	// minute before reporting a failure that has nothing to do with the client.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start client %q: %v", command, err)
 	}
 
 	t.Cleanup(func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
+		if cmd.Process == nil {
+			return
+		}
+		group := -cmd.Process.Pid
+
+		// Asked to stop first: a client is entitled to close its database and
+		// finish the write it is in the middle of.
+		_ = syscall.Kill(group, syscall.SIGTERM)
+
+		done := make(chan struct{})
+		go func() {
 			cmd.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = syscall.Kill(group, syscall.SIGKILL)
+			<-done
 		}
 	})
 }
