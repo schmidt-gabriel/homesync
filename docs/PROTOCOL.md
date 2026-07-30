@@ -205,11 +205,15 @@ may change. The full set of codes:
 
 ### `GET /healthz`
 
-No authentication. For container healthchecks.
+No authentication. For container healthchecks, and for asking a server which
+build it is running without holding a token for it.
 
 ```json
-{ "status": "ok", "rev": 42 }
+{ "status": "ok", "rev": 42, "version": "1.1.2" }
 ```
+
+`version` is the release the binary was built from. A server built from a
+working copy rather than a tag reports `"local"`.
 
 ### `GET /v1/changes?since=<rev>&limit=<n>`
 

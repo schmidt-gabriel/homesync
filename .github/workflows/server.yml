@@ -184,6 +184,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./server
+          # So the admin page names the release the image came from, rather
+          # than reporting every published build as "dev".
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

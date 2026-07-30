@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
+	"github.com/schmidt-gabriel/homesync/server/internal/version"
 )
 
 //go:embed ui
@@ -227,6 +228,7 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 }
 
 type overviewResponse struct {
+	Version      string      `json:"version"`
 	Stats        index.Stats `json:"stats"`
 	Devices      int         `json:"devices"`
 	TrashItems   int         `json:"trash_items"`
@@ -265,6 +267,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	scanInfo, _ := s.index.GetMeta(r.Context(), index.MetaLastScanStats, "")
 
 	writeJSON(w, http.StatusOK, overviewResponse{
+		Version:      version.Current,
 		Stats:        stats,
 		Devices:      len(devices),
 		TrashItems:   len(items),

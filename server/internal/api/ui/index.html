@@ -129,6 +129,10 @@
   </div>
   <header>
     <h1>HomeSync</h1>
+    <!-- Next to the name, on every tab: the first thing worth knowing when
+         something behaves unexpectedly is which build is answering. "local"
+         means a binary built from a working copy rather than a release. -->
+    <span class="muted" id="server-version"></span>
     <span class="spacer"></span>
     <button class="ghost" id="refresh">Refresh</button>
     <button class="ghost" id="logout">Sign out</button>
@@ -321,6 +325,7 @@ async function loadOverview() {
   const data = await api("/admin/api/overview");
 
   $("insecure").hidden = data.secure;
+  $("server-version").textContent = data.version || "";
 
   const cards = [
     ["Files", data.stats.files.toLocaleString()],

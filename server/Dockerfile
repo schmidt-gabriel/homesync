@@ -10,9 +10,16 @@ RUN go mod download
 
 COPY . .
 
+# What the build calls itself, shown on the admin page. CI passes the release
+# tag; a plain `docker compose build` leaves "local", which is the honest
+# answer for an image built from a working copy.
+ARG VERSION=local
+
 # CGO_ENABLED=0 keeps the binary static — the SQLite driver is pure Go
 # (modernc.org/sqlite), so there is nothing to link against.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/homesync ./cmd/homesync
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X github.com/schmidt-gabriel/homesync/server/internal/version.Current=${VERSION}" \
+    -o /out/homesync ./cmd/homesync
 
 
 FROM alpine:3.21

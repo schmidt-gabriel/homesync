@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -47,6 +48,23 @@ func testAuthentication(t *testing.T, srv *Server) {
 		defer res.Body.Close()
 		if res.StatusCode != http.StatusOK {
 			t.Errorf("expected 200, got %d", res.StatusCode)
+		}
+
+		// The build is part of the answer. Asking a server which version it is
+		// running must not require a credential for it: the question comes up
+		// precisely when something looks wrong from a machine that has none.
+		var health struct {
+			Status  string `json:"status"`
+			Version string `json:"version"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&health); err != nil {
+			t.Fatalf("decode /healthz: %v", err)
+		}
+		if health.Status != "ok" {
+			t.Errorf("expected status ok, got %q", health.Status)
+		}
+		if health.Version == "" {
+			t.Error("expected /healthz to name the build the server was built from")
 		}
 	})
 

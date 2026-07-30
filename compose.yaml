@@ -2,7 +2,12 @@
 # up`. The bind mounts are relative, so no host path has to be prepared first.
 services:
   homesync:
-    build: ./server
+    build:
+      context: ./server
+      args:
+        # Left as "local"; CI passes the release tag when it builds the
+        # published image.
+        VERSION: ${HOMESYNC_VERSION:-local}
     container_name: homesync
     ports:
       - "${HOMESYNC_PORT:-8420}:8080"

@@ -14,6 +14,7 @@ import (
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
 	"github.com/schmidt-gabriel/homesync/server/internal/store"
 	"github.com/schmidt-gabriel/homesync/server/internal/trash"
+	"github.com/schmidt-gabriel/homesync/server/internal/version"
 )
 
 // Server wires the index, the data store and the trash to HTTP.
@@ -138,7 +139,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "index unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "rev": rev})
+	// The version rides along here rather than on a route of its own: this is
+	// the one endpoint that needs no token, so `curl .../healthz` answers
+	// "which build is that server running?" from anywhere on the network,
+	// including from a machine that holds no credential for it.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "rev": rev, "version": version.Current})
 }
 
 // errorResponse is the single error shape every endpoint returns, so a client
