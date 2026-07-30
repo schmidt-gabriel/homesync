@@ -100,6 +100,16 @@ the client. It also starts the client in its own process group and signals the
 group: killing only `cmd.Process` reaches the shell, and where `/bin/sh` forks
 rather than execs (dash, so every Linux runner) the client outlives the test.
 
+**Ignore rules are enforced by the server, not only by the clients.** They live
+in the meta table, and the scanner, the watcher and the API all read the same
+parsed copy. Saving them is retroactive: what they now exclude is tombstoned and
+moved to the trash. Two things follow. A path is only dropped when *every*
+reading of it excludes it — its full name and its name inside each device scope
+— or the server would tombstone what a scoped device is still uploading, and the
+two would undo each other forever. And clients must re-read the document every
+cycle: one that keeps its launch-time copy reads the purge as a mass deletion
+and trips the delete guard.
+
 **Encryption at rest is server-side.** The server holds the key, so it defends a
 stolen disk or a copied backup, not a compromised server. Sizes and hashes in
 the index always describe plaintext; the bytes on disk are longer.

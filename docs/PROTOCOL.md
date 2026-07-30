@@ -354,7 +354,35 @@ matched against the path relative to the root; blank lines and `#` comments are
 skipped.
 
 Clients should apply these rules **in addition to** their own platform noise
-list, never instead of it.
+list, never instead of it. They should re-read them at the start of every cycle:
+a rule saved on another machine has to reach this one before it decides what to
+upload, and before it reads the server acting on that rule as a mass deletion.
+
+**A save is retroactive.** The rules are not a filter clients apply on their own
+— the server enforces them too. Saving them:
+
+- takes every path they now exclude out of the index, as a tombstone, so every
+  client stops listing it;
+- moves that content to the trash, where it stays recoverable;
+- keeps it out from then on. A file matching a rule is not indexed again,
+  whether it arrives through this API or is written straight to the volume.
+
+The response reports how many paths went:
+
+```json
+{ "rules": "...", "version": 1785194027083, "purged": 167 }
+```
+
+`purged` is omitted when nothing matched. A client sees the removals as ordinary
+tombstones, which its own copy of the rules filters out of the change set — so
+what a rule takes off the server stays on the machines that hold it.
+
+A rule that names a scope explicitly (`mac/build/`) is read differently by the
+two sides: the server sees `mac/build`, and the device syncing `mac` sees
+`build`. The server only drops a path when every reading of it — its full name,
+and its name as seen from each device scope containing it — excludes it.
+Otherwise the server would tombstone a directory a device is still uploading,
+and the two would undo each other indefinitely.
 
 ### `GET /v1/trash` · `POST /v1/trash/restore`
 

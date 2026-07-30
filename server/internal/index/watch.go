@@ -96,7 +96,7 @@ func (w *Watcher) addTree(dir string) error {
 		if !d.IsDir() {
 			return nil
 		}
-		if rel, relErr := w.rel(abs); relErr == nil && rel != "" && w.skip != nil && w.skip(rel) {
+		if rel, relErr := w.rel(abs); relErr == nil && rel != "" && w.skip != nil && w.skip(rel, true) {
 			return fs.SkipDir
 		}
 		if err := w.fs.Add(abs); err != nil && !os.IsNotExist(err) {
@@ -122,20 +122,26 @@ func (w *Watcher) handle(ctx context.Context, event fsnotify.Event) {
 	if err != nil || rel == "" {
 		return
 	}
-	if w.skip != nil && w.skip(rel) {
+
+	// A removed path cannot be stat'd, and is judged as a file. That is the
+	// harmless direction: a rule written for directories then fails to match,
+	// and the work it lets through is a lookup of a path the index does not
+	// hold, which does nothing.
+	info, statErr := os.Lstat(event.Name)
+	isDir := statErr == nil && info.IsDir()
+
+	if w.skip != nil && w.skip(rel, isDir) {
 		return
 	}
 
 	// A new directory needs its own watch, and it may already contain files
 	// that were moved in wholesale — those never generate individual events.
-	if event.Has(fsnotify.Create) {
-		if info, err := os.Lstat(event.Name); err == nil && info.IsDir() {
-			if err := w.addTree(event.Name); err != nil {
-				slog.Warn("cannot watch new directory", "dir", event.Name, "err", err)
-			}
-			w.scheduleTree(ctx, event.Name)
-			return
+	if event.Has(fsnotify.Create) && isDir {
+		if err := w.addTree(event.Name); err != nil {
+			slog.Warn("cannot watch new directory", "dir", event.Name, "err", err)
 		}
+		w.scheduleTree(ctx, event.Name)
+		return
 	}
 
 	w.schedule(ctx, rel, event.Name)
@@ -151,7 +157,7 @@ func (w *Watcher) scheduleTree(ctx context.Context, dir string) {
 		if relErr != nil || rel == "" {
 			return nil
 		}
-		if w.skip != nil && w.skip(rel) {
+		if w.skip != nil && w.skip(rel, d.IsDir()) {
 			if d.IsDir() {
 				return fs.SkipDir
 			}

@@ -25,13 +25,16 @@ const settleDelay = 700 * time.Millisecond
 // nothing about what happened while this process was down, which is why the
 // engine polls as well: this is for immediacy, the poll is for correctness.
 type Watcher struct {
-	root   string
-	rules  *Ignore
+	root string
+	// A function, not a set: the rules are replaced whenever the server's
+	// document changes, and a watcher holding the launch-time copy would keep
+	// watching a tree someone has since excluded.
+	rules  func() *Ignore
 	fs     *fsnotify.Watcher
 	logger *slog.Logger
 }
 
-func NewWatcher(root string, rules *Ignore, logger *slog.Logger) (*Watcher, error) {
+func NewWatcher(root string, rules func() *Ignore, logger *slog.Logger) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -110,7 +113,7 @@ func (w *Watcher) watchTree(dir string) error {
 		// a tree with a large ignored build directory it is the difference
 		// between a handful of watches and tens of thousands.
 		if rel, err := filepath.Rel(w.root, abs); err == nil && rel != "." {
-			if w.rules.Excludes(filepath.ToSlash(rel), true) {
+			if w.rules().Excludes(filepath.ToSlash(rel), true) {
 				return fs.SkipDir
 			}
 		}

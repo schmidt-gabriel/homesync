@@ -9,6 +9,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -96,11 +97,13 @@ func (e *PausedError) Error() string { return e.Reason }
 
 // Engine keeps a local folder and a HomeSync server in step.
 type Engine struct {
-	cfg    Config
-	api    *Client
-	store  *Store
-	state  *State
-	rules  *Ignore
+	cfg   Config
+	api   *Client
+	store *Store
+	state *State
+	// Swapped whole rather than mutated, and read by the watcher on another
+	// goroutine, so the pointer is the thing that has to be safe.
+	rules  atomic.Pointer[Ignore]
 	logger *slog.Logger
 }
 
@@ -118,14 +121,15 @@ func NewEngine(cfg Config, api *Client, logger *slog.Logger) (*Engine, error) {
 		return nil, err
 	}
 
-	return &Engine{
+	engine := &Engine{
 		cfg:    cfg,
 		api:    api,
 		store:  store,
 		state:  state,
-		rules:  ParseIgnore(state.IgnoreRules()),
 		logger: logger,
-	}, nil
+	}
+	engine.rules.Store(ParseIgnore(state.IgnoreRules()))
+	return engine, nil
 }
 
 func (e *Engine) Close() error { return e.state.Close() }
@@ -133,13 +137,15 @@ func (e *Engine) Close() error { return e.state.Close() }
 func (e *Engine) Store() *Store { return e.store }
 
 // Rules is the ignore set in force, which the watcher needs so it does not
-// place a watch on every directory of an ignored build tree.
-func (e *Engine) Rules() *Ignore { return e.rules }
+// place a watch on every directory of an ignored build tree. Call it per use:
+// the set is replaced whenever the server's document changes.
+func (e *Engine) Rules() *Ignore { return e.rules.Load() }
 
 func (e *Engine) PollInterval() time.Duration { return e.cfg.PollInterval }
 
 // RefreshIgnoreRules fetches the shared rules, so a pattern added on one
-// machine takes effect everywhere.
+// machine takes effect everywhere. Run at the start of every cycle; the version
+// check keeps it to a parse only when the document has actually changed.
 func (e *Engine) RefreshIgnoreRules(ctx context.Context) {
 	doc, err := e.api.IgnoreRules(ctx)
 	if err != nil {
@@ -153,7 +159,7 @@ func (e *Engine) RefreshIgnoreRules(ctx context.Context) {
 		e.logger.Warn("cannot store ignore rules", "err", err)
 		return
 	}
-	e.rules = ParseIgnore(doc.Rules)
+	e.rules.Store(ParseIgnore(doc.Rules))
 }
 
 // SyncOnce pulls, then pushes.
@@ -162,6 +168,13 @@ func (e *Engine) RefreshIgnoreRules(ctx context.Context) {
 // fresh, which turns what would have been a conflict into an ordinary update
 // whenever the two edits did not really overlap in time.
 func (e *Engine) SyncOnce(ctx context.Context) (Summary, error) {
+	// Before the pull, every time, not once at launch. The rules decide what
+	// this whole cycle will touch, and a machine still holding its launch-time
+	// copy carries on uploading a folder someone excluded hours ago — and reads
+	// the server clearing that folder out as a mass deletion, which trips the
+	// delete guard and stops sync altogether.
+	e.RefreshIgnoreRules(ctx)
+
 	pulled, err := e.pull(ctx)
 	if err != nil {
 		return pulled, err
@@ -195,7 +208,7 @@ func (e *Engine) pull(ctx context.Context) (Summary, error) {
 
 	relevant := entries[:0:0]
 	for _, entry := range entries {
-		if !e.rules.Excludes(entry.Path, entry.IsDir()) {
+		if !e.Rules().Excludes(entry.Path, entry.IsDir()) {
 			relevant = append(relevant, entry)
 		}
 	}
@@ -444,7 +457,7 @@ func (e *Engine) applyFile(ctx context.Context, entry Entry, summary *Summary) e
 func (e *Engine) push(ctx context.Context) (Summary, error) {
 	var summary Summary
 
-	onDisk, err := e.store.Scan(e.rules)
+	onDisk, err := e.store.Scan(e.Rules())
 	if err != nil {
 		return summary, err
 	}

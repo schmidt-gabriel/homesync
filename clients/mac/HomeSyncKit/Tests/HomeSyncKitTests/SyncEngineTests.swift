@@ -106,6 +106,40 @@ struct SyncEngineTests {
         }
     }
 
+    @Test("a rule saved elsewhere takes effect without a restart")
+    func picksUpNewRulesMidRun() async throws {
+        let machine = try TestMachine()
+
+        // A file synced before anyone thought to exclude it, which is the only
+        // shape this problem ever has.
+        let marker = "ignored-\(UUID().uuidString.prefix(8)).txt"
+        try machine.write(marker, "content")
+        try await machine.engine.syncOnce()
+        #expect(try await machine.server.read(machine.scoped(marker)) == "content")
+
+        // Saved through a second connection, standing in for the admin UI or
+        // another machine. The pattern names only this test's own file: the
+        // document is shared by every test on this server, and saving it now
+        // removes what it matches.
+        let previous = try await machine.server.api.ignoreRules().rules
+        try await machine.server.api.setIgnoreRules("# \(marker)\n\(marker)\n")
+        defer { Task { try? await machine.server.api.setIgnoreRules(previous) } }
+
+        // The engine has been running throughout, and used to hold the rules it
+        // fetched at launch: it read the server clearing the path out as a real
+        // deletion and removed the local copy — or, past the delete guard's
+        // limit, stopped syncing altogether.
+        try await machine.engine.syncOnce()
+
+        #expect(machine.exists(marker), "an excluded file must stay on the machine that holds it")
+        await #expect(throws: (any Error).self) {
+            try await machine.server.read(machine.scoped(marker))
+        }
+        if case .paused(let reason) = await machine.engine.currentState {
+            Issue.record("paused over a path the new rules exclude: \(reason)")
+        }
+    }
+
     // MARK: - Server to local
 
     @Test("a file created on the server arrives locally")

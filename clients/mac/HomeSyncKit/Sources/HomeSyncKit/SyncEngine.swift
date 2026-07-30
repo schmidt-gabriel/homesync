@@ -44,8 +44,7 @@ public actor SyncEngine {
     /// Runs until cancelled: watches the folder, listens for server events, and
     /// polls as a backstop.
     public func run() async {
-        await refreshIgnoreRules()
-
+        // No fetch here: every cycle starts with one, including the first.
         await withTaskGroup(of: Void.self) { group in
             group.addTask { [weak self] in await self?.watchLocalChanges() }
             group.addTask { [weak self] in await self?.watchServerEvents() }
@@ -134,6 +133,14 @@ public actor SyncEngine {
         isSyncing = true
         status = .syncing(progress: nil)
         defer { isSyncing = false }
+
+        // Before the pull, every time, not once at launch. The rules decide
+        // what this whole cycle will touch, and a machine that keeps its
+        // launch-time copy carries on uploading a folder someone excluded
+        // hours ago — and reads the server clearing that folder out as 167
+        // files being deleted, which trips the delete guard and stops sync
+        // altogether. One small GET is worth a great deal here.
+        await refreshIgnoreRules()
 
         do {
             let pulled = try await pull()
@@ -538,7 +545,8 @@ public actor SyncEngine {
     // MARK: - Ignore rules
 
     /// Fetches the shared rules, so a pattern added on one machine takes effect
-    /// everywhere.
+    /// everywhere. Run at the start of every cycle; the version check keeps it
+    /// to a parse only when the document has actually changed.
     public func refreshIgnoreRules() async {
         guard let document = try? await api.ignoreRules() else { return }
         guard document.version != state.ignoreVersion else { return }
