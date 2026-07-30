@@ -18,6 +18,7 @@ import (
 
 	"github.com/schmidt-gabriel/homesync/server/internal/api"
 	"github.com/schmidt-gabriel/homesync/server/internal/crypt"
+	"github.com/schmidt-gabriel/homesync/server/internal/ignore"
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
 	"github.com/schmidt-gabriel/homesync/server/internal/store"
 	"github.com/schmidt-gabriel/homesync/server/internal/trash"
@@ -231,10 +232,18 @@ func serve(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The shared ignore rules decide what the index holds, not just what the
+	// clients upload. One instance, read by the scanner, the watcher and the
+	// API alike, so a rule cannot be in force in one of them and not another.
+	rules := ignore.NewShared(ix.DB())
+	if err := rules.Refresh(ctx); err != nil {
+		return fmt.Errorf("read ignore rules: %w", err)
+	}
+
 	// Reconcile before serving: whatever happened while we were down is
 	// reflected in the index before any client can ask about it.
 	slog.Info("scanning data directory", "dir", st.Root())
-	stats, err := ix.Scan(ctx, st.Root(), index.DefaultSkip, key)
+	stats, err := ix.Scan(ctx, st.Root(), rules.Skip, key)
 	if err != nil {
 		return fmt.Errorf("initial scan: %w", err)
 	}
@@ -244,7 +253,7 @@ func serve(cfg config) error {
 		return err
 	}
 
-	watcher, err := index.NewWatcher(ix, st.Root(), index.DefaultSkip, key)
+	watcher, err := index.NewWatcher(ix, st.Root(), rules.Skip, key)
 	if err != nil {
 		return err
 	}
@@ -254,9 +263,9 @@ func serve(cfg config) error {
 		}
 	}()
 
-	go runJanitor(ctx, ix, st, tr, cfg)
+	go runJanitor(ctx, ix, st, tr, rules, cfg)
 
-	handler := api.New(ix, st, tr)
+	handler := api.New(ix, st, tr, rules)
 	switch {
 	case cfg.adminNoAuth:
 		handler.EnableAdmin(cfg.adminUser, "", true)
@@ -330,7 +339,8 @@ func warnIfNoDevices(ctx context.Context, ix *index.Index) error {
 
 // runJanitor does the periodic housekeeping: full rescan, trash purge and
 // tombstone pruning.
-func runJanitor(ctx context.Context, ix *index.Index, st *store.Store, tr *trash.Trash, cfg config) {
+func runJanitor(ctx context.Context, ix *index.Index, st *store.Store, tr *trash.Trash,
+	rules *ignore.Shared, cfg config) {
 	ticker := time.NewTicker(cfg.rescanInterval)
 	defer ticker.Stop()
 
@@ -341,7 +351,13 @@ func runJanitor(ctx context.Context, ix *index.Index, st *store.Store, tr *trash
 		case <-ticker.C:
 		}
 
-		stats, err := ix.Scan(ctx, st.Root(), index.DefaultSkip, st.Key())
+		// Re-read first: a device registered from the CLI since the last pass
+		// has a scope, and a scope changes how a rule reads.
+		if err := rules.Refresh(ctx); err != nil {
+			slog.Warn("cannot re-read ignore rules", "err", err)
+		}
+
+		stats, err := ix.Scan(ctx, st.Root(), rules.Skip, st.Key())
 		if err != nil {
 			slog.Warn("rescan failed", "err", err)
 		} else if stats.Added+stats.Updated+stats.Deleted > 0 {

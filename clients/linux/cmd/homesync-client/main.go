@@ -126,7 +126,7 @@ func serve(ctx context.Context, engine *sync.Engine, api *sync.Client) error {
 		}
 	}
 
-	watcher, err := sync.NewWatcher(engine.Store().Root(), engine.Rules(), slog.Default())
+	watcher, err := sync.NewWatcher(engine.Store().Root(), engine.Rules, slog.Default())
 	if err != nil {
 		return err
 	}

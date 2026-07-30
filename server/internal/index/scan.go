@@ -30,7 +30,11 @@ func (s ScanStats) String() string {
 
 // SkipFunc reports whether a path (relative, slash-separated) stays out of the
 // index entirely.
-type SkipFunc func(rel string) bool
+//
+// It is told whether the path is a directory because gitignore-shaped rules
+// distinguish the two: `build/` covers a directory called build and not a file
+// of that name.
+type SkipFunc func(rel string, isDir bool) bool
 
 // Scan walks root and reconciles the index against what is actually on disk.
 //
@@ -78,7 +82,7 @@ func (ix *Index) Scan(ctx context.Context, root string, skip SkipFunc, key *cryp
 			return nil
 		}
 
-		if skip != nil && skip(clean) {
+		if skip != nil && skip(clean, d.IsDir()) {
 			stats.Skipped++
 			if d.IsDir() {
 				return fs.SkipDir
@@ -226,8 +230,9 @@ func PlainSize(abs string, info os.FileInfo, key *crypt.Key) (int64, error) {
 }
 
 // DefaultSkip keeps our own bookkeeping and the junk macOS scatters through
-// every directory out of the index.
-func DefaultSkip(rel string) bool {
+// every directory out of the index. It matches on names alone, so whether the
+// path is a directory never comes into it.
+func DefaultSkip(rel string, _ bool) bool {
 	for _, part := range strings.Split(rel, "/") {
 		switch part {
 		case ".trash", ".DS_Store", ".Spotlight-V100", ".Trashes",

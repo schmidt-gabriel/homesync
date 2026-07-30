@@ -224,6 +224,11 @@
         <p class="muted" style="margin-top:0">
           These apply to every machine. One glob per line; blank lines and <code>#</code> comments are skipped.
         </p>
+        <p class="muted">
+          Saving is retroactive: anything already here that a rule now excludes is taken out of
+          the index and moved to the trash, and every machine stops listing it. The copies on
+          those machines are left alone — the rule means "stop syncing this", not "delete it".
+        </p>
         <textarea id="ignore-text" spellcheck="false"></textarea>
         <div class="row" style="margin-top:10px">
           <button class="action" id="save-ignore">Save</button>
@@ -634,11 +639,22 @@ $("empty-trash").addEventListener("click", async () => {
 });
 
 $("save-ignore").addEventListener("click", async () => {
-  await api("/admin/api/ignore", {
+  const result = await api("/admin/api/ignore", {
     method: "PUT",
     body: JSON.stringify({ rules: $("ignore-text").value }),
   });
-  $("ignore-status").textContent = "saved just now";
+
+  // Say what the save actually did. A rule that quietly removes a few hundred
+  // paths is the whole point of saving one, but it should never be a surprise.
+  const purged = result.purged || 0;
+  $("ignore-status").textContent = purged === 0
+    ? "saved just now"
+    : `saved just now — ${purged} path(s) removed, file content is in the trash`;
+
+  if (purged > 0) {
+    loadTrash();
+    loadOverview();
+  }
 });
 
 // ── Session ──────────────────────────────────────────────────────────────────

@@ -1,11 +1,13 @@
 package api
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -145,86 +147,16 @@ func parentDir(abs string) string {
 
 // ── Shared ignore rules ──────────────────────────────────────────────────────
 
-// The ignore list lives on the server so that every machine filters the same
-// way. A rule added on one Mac takes effect everywhere without touching the
-// others.
-const (
-	ignoreKey        = "ignore_rules"
-	ignoreVersionKey = "ignore_version"
-)
-
-// defaultIgnore is seeded on first start. These are the files macOS scatters
-// through every directory, which nobody wants replicated.
-const defaultIgnore = `# One pattern per line. Blank lines and # comments are ignored.
-# Syntax: gitignore-style globs matched against the path relative to the root.
-# A trailing slash restricts a rule to directories.
-
-.DS_Store
-._*
-Icon?
-.Spotlight-V100
-.Trashes
-.fseventsd
-.TemporaryItems
-.DocumentRevisions-V100
-*.swp
-~$*
-
-# Dependency and build directories. These are large, they churn constantly,
-# and every one of them is reproducible from the source next to it, so syncing
-# them costs a great deal and is worth nothing.
-node_modules/
-bower_components/
-.pnpm-store/
-.yarn/cache/
-target/
-build/
-dist/
-out/
-.next/
-.nuxt/
-.svelte-kit/
-.parcel-cache/
-.turbo/
-.gradle/
-.venv/
-venv/
-__pycache__/
-*.pyc
-.tox/
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
-vendor/
-Pods/
-Carthage/
-DerivedData/
-.build/
-.swiftpm/
-*.xcuserstate
-xcuserdata/
-.terraform/
-.stack-work/
-_build/
-deps/
-obj/
-bin/Debug/
-bin/Release/
-
-# Version control internals. A repository that syncs half-written objects
-# between machines is worse than one that does not sync at all: use the remote.
-.git/
-.hg/
-.svn/
-`
-
 type ignoreResponse struct {
 	Rules   string `json:"rules"`
 	Version int64  `json:"version"`
+	// Purged counts what saving these rules took off the server. Present only
+	// on a save, and zero when it took nothing.
+	Purged int `json:"purged,omitempty"`
 }
 
 func (s *Server) handleGetIgnore(w http.ResponseWriter, r *http.Request) {
-	rules, version, err := s.readIgnore(r)
+	rules, version, err := s.ignore.Load(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "cannot read ignore rules")
 		return
@@ -244,37 +176,77 @@ func (s *Server) handlePutIgnore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	version := time.Now().UnixMilli()
-	_, err := s.index.DB().ExecContext(r.Context(),
-		`INSERT INTO meta(key, value) VALUES (?, ?), (?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		ignoreKey, req.Rules, ignoreVersionKey, strconv.FormatInt(version, 10))
+	version, err := s.ignore.Save(r.Context(), req.Rules)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "cannot store ignore rules")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, ignoreResponse{Rules: req.Rules, Version: version})
+	// The rules are saved either way. A purge that fails halfway has still
+	// removed what it removed, and the scanner drops the rest, so reporting the
+	// count we reached is more use to the caller than an error that would
+	// suggest the save itself did not happen.
+	purged, err := s.purgeIgnored(r.Context())
+	if err != nil {
+		slog.Warn("ignore rules saved, but the purge did not finish",
+			"purged", purged, "err", err)
+	}
+
+	writeJSON(w, http.StatusOK, ignoreResponse{Rules: req.Rules, Version: version, Purged: purged})
 }
 
-func (s *Server) readIgnore(r *http.Request) (string, int64, error) {
-	var rules string
-	err := s.index.DB().QueryRowContext(r.Context(),
-		`SELECT value FROM meta WHERE key = ?`, ignoreKey).Scan(&rules)
-	if errors.Is(err, sql.ErrNoRows) {
-		return defaultIgnore, 0, nil
-	}
+// purgeIgnored takes out everything the rules now exclude.
+//
+// A rule has to be retroactive to mean anything: the reason someone adds
+// `.git/` is the copy that is already on the server, and leaving it there means
+// the pattern they just wrote appears to do nothing. Every client is told by
+// the tombstones; the content goes to the trash rather than being destroyed,
+// exactly like any other deletion here.
+//
+// Files that were never indexed are left alone. What is on the volume but not
+// in the index is invisible to every client already, and this is not the place
+// to go looking for it.
+func (s *Server) purgeIgnored(ctx context.Context) (int, error) {
+	entries, err := s.index.All(ctx)
 	if err != nil {
-		return "", 0, err
+		return 0, err
 	}
 
-	var version int64
-	var raw string
-	err = s.index.DB().QueryRowContext(r.Context(),
-		`SELECT value FROM meta WHERE key = ?`, ignoreVersionKey).Scan(&raw)
-	if err == nil {
-		version, _ = strconv.ParseInt(raw, 10, 64)
+	// Deepest first, so a directory's children are already gone by the time we
+	// try to remove it.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path > entries[j].Path })
+
+	purged := 0
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return purged, err
+		}
+		if !s.ignore.Skip(entry.Path, entry.Type == index.TypeDir) {
+			continue
+		}
+
+		if entry.Type == index.TypeFile {
+			if err := s.moveToTrash(entry.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				slog.Warn("cannot move an ignored file to the trash", "path", entry.Path, "err", err)
+				continue
+			}
+		} else if err := s.store.Remove(entry.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			// Something unindexed is still inside it. The row goes anyway: the
+			// scanner skips this path from here on, so keeping it would leave a
+			// directory no client can see and nothing will ever clean up.
+			slog.Warn("cannot remove an ignored directory", "path", entry.Path, "err", err)
+		}
+
+		if _, err := s.index.MarkDeleted(ctx, entry.Path, time.Now().UnixMilli()); err != nil {
+			slog.Warn("cannot tombstone an ignored path", "path", entry.Path, "err", err)
+			continue
+		}
+		purged++
 	}
 
-	return rules, version, nil
+	if purged > 0 {
+		slog.Info("ignore rules purged paths from the index", "paths", purged,
+			"note", "file content is recoverable from the trash")
+	}
+	return purged, nil
 }

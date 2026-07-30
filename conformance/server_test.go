@@ -582,6 +582,86 @@ func testIgnoreRules(t *testing.T, srv *Server) {
 			t.Errorf("expected the ETag to carry the version, got %q", got)
 		}
 	})
+
+	// Saving a rule has to be retroactive to mean anything: someone adds
+	// `.git/` because of the copy that is already on the server. A document
+	// naming only this subtest's own directory keeps the blast radius to it —
+	// the suite shares one server, and this endpoint now removes things.
+	t.Run("a saved rule takes what it excludes off the server", func(t *testing.T) {
+		dir := unique(t, "ignored-tree")
+		path := dir + "/inside.txt"
+		srv.PutNew(t, path, "should not have been synced")
+
+		res := srv.Do(t, http.MethodPut, "/v1/ignore",
+			jsonBody(t, map[string]string{"rules": "# " + t.Name() + "\n" + dir + "/\n"}),
+			"Content-Type", "application/json")
+		requireStatus(t, res, http.StatusOK, "PUT /v1/ignore")
+
+		var saved struct {
+			Purged int `json:"purged"`
+		}
+		res.JSON(t, &saved)
+		if saved.Purged < 1 {
+			t.Errorf("expected the save to report what it removed, got purged=%d", saved.Purged)
+		}
+
+		if got := srv.Get(t, path).Status; got != http.StatusNotFound {
+			t.Errorf("expected the excluded file to be gone, got status %d", got)
+		}
+		if entry, found := srv.ChangesSince(t, 0).Find(path); !found || !entry.Deleted {
+			t.Errorf("expected a tombstone for %q so every client stops listing it, got %+v", path, entry)
+		}
+
+		// Recoverable, not destroyed: an ignore rule is a sync decision, and it
+		// must not be a way to lose the only copy of something.
+		listing := srv.Do(t, http.MethodGet, "/v1/trash", nil)
+		requireStatus(t, listing, http.StatusOK, "GET /v1/trash")
+
+		var trashed trashListing
+		listing.JSON(t, &trashed)
+		if _, found := trashed.findByPath(path); !found {
+			t.Errorf("expected %q in the trash after the purge", path)
+		}
+	})
+
+	// The rule has to hold against the volume as well, or anything written
+	// straight to the disk walks back into the index and the purge above buys
+	// nothing.
+	t.Run("an excluded path written to the volume is not indexed", func(t *testing.T) {
+		if srv.DataDir == "" {
+			t.Skip("no access to the server's data directory (testing a remote server)")
+		}
+
+		dir := unique(t, "ignored-tree")
+		ignored := dir + "/dropped-in.txt"
+		witness := unique(t, "witness.txt")
+
+		res := srv.Do(t, http.MethodPut, "/v1/ignore",
+			jsonBody(t, map[string]string{"rules": "# " + t.Name() + "\n" + dir + "/\n"}),
+			"Content-Type", "application/json")
+		requireStatus(t, res, http.StatusOK, "PUT /v1/ignore")
+
+		if err := os.MkdirAll(filepath.Join(srv.ScopedDir(), dir), 0o755); err != nil {
+			t.Fatalf("create directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(srv.ScopedDir(), ignored), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write ignored file: %v", err)
+		}
+		// Written second and watched for first: both go through the same
+		// debounce, so seeing this one means the other has had its chance.
+		if err := os.WriteFile(filepath.Join(srv.ScopedDir(), witness), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write witness file: %v", err)
+		}
+
+		eventually(t, 15*time.Second, "the witness file to be indexed", func() bool {
+			entry, found := srv.ChangesSince(t, 0).Find(witness)
+			return found && !entry.Deleted
+		})
+
+		if entry, found := srv.ChangesSince(t, 0).Find(ignored); found && !entry.Deleted {
+			t.Errorf("an excluded path written straight to the volume was indexed: %+v", entry)
+		}
+	})
 }
 
 // ── §6 Events ────────────────────────────────────────────────────────────────
