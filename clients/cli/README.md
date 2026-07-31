@@ -1,7 +1,14 @@
-# HomeSync — Linux client
+# HomeSync — CLI client
 
 A daemon that keeps a folder in step with a HomeSync server. One static binary,
 no runtime to install, no cgo.
+
+It is not a Linux client, which is why it no longer lives in a directory called
+that: the same source builds and runs on Linux, macOS and the BSDs. Windows is
+the exception, and not a small one — the sync-now signal is `SIGUSR1`, which
+that platform has no equivalent of, so it does not compile there at all. What
+is Linux-specific here is the packaging, not the program: the systemd unit in
+[`linux/`](linux/), and the commands in this file that drive it.
 
 It was written against [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md) rather than
 against the Mac client, which is the reason the protocol was written down
@@ -21,18 +28,22 @@ it by passing the same conformance suite.
 ## Install
 
 ```bash
-cd clients/linux
+cd clients/cli
 go build -o homesync-client ./cmd/homesync-client
 sudo install -m 755 homesync-client /usr/local/bin/
 ```
 
-There is no cgo, so it cross-compiles from any machine, which is the usual way
-to get a binary onto a Raspberry Pi:
+There is no cgo, so it cross-compiles from any machine to any of them, which is
+the usual way to get a binary onto a Raspberry Pi:
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o homesync-client ./cmd/homesync-client
-GOOS=linux GOARCH=arm64 go build -o homesync-client ./cmd/homesync-client
+GOOS=linux  GOARCH=amd64 go build -o homesync-client ./cmd/homesync-client
+GOOS=linux  GOARCH=arm64 go build -o homesync-client ./cmd/homesync-client
+GOOS=darwin GOARCH=arm64 go build -o homesync-client ./cmd/homesync-client
 ```
+
+CI builds every one of those on each change, so the list is checked rather than
+claimed.
 
 ## First run
 
@@ -73,8 +84,9 @@ Drop the `-once` and it stays up, syncing continuously.
 
 ## Run it as a service
 
-`homesync.service` is a systemd **user** unit. It syncs one person's folder with
-their permissions and has no business running as root.
+On Linux, [`linux/homesync.service`](linux/homesync.service) is a systemd
+**user** unit. It syncs one person's folder with their permissions and has no
+business running as root.
 
 ```bash
 mkdir -p ~/.config/homesync ~/.config/systemd/user
@@ -86,7 +98,7 @@ HOMESYNC_ROOT=/home/you/HomeSync
 EOF
 chmod 600 ~/.config/homesync/env
 
-cp homesync.service ~/.config/systemd/user/
+cp linux/homesync.service ~/.config/systemd/user/
 systemctl --user enable --now homesync.service
 journalctl --user -u homesync -f
 ```
@@ -98,14 +110,25 @@ it).
 Add `loginctl enable-linger $USER` if the folder should keep syncing while
 nobody is logged in. Without it, systemd stops your user services at logout.
 
+No unit is shipped for anything else, because a plausible-looking launchd plist
+that nobody has run is worse than none. Elsewhere, hand it to whatever already
+supervises your user processes with the same three variables in its
+environment. Whatever that is, give it a restart policy: the client exits on a
+revoked token rather than running blind, and a supervisor that treats the exit
+as final leaves the folder quietly unsynced.
+
 ## Where everything lives
 
 | What | Where | Change it with |
 |---|---|---|
 | The synced folder | `~/HomeSync` | `HOMESYNC_ROOT` or `-root` |
-| What it remembers about that folder | `~/.config/homesync/state-<hash>.sqlite` | not meant to be edited |
-| Server address, token, folder | `~/.config/homesync/env` | edit, then restart the service |
-| Logs | the journal | `journalctl --user -u homesync` |
+| What it remembers about that folder | `<config>/homesync/state-<hash>.sqlite` | not meant to be edited |
+| Server address, token, folder | `~/.config/homesync/env`, read by the unit | edit, then restart the service |
+| Logs | the journal, or wherever stderr goes | `journalctl --user -u homesync` |
+
+`<config>` is the system's own config directory — `~/.config` on Linux and the
+BSDs, `~/Library/Application Support` on macOS — so a machine that runs both
+this and some other tool keeps them where each platform expects.
 
 `<hash>` is the first 16 hex characters of the SHA-256 of the folder's resolved
 path, so each folder keeps its own record and switching between two never mixes
@@ -143,10 +166,11 @@ nothing syncs until a valid one is in place.
 every five minutes, but sometimes you want it to look right now:
 
 ```bash
-systemctl --user kill -s USR1 homesync
+pkill -USR1 homesync-client            # anywhere
+systemctl --user kill -s USR1 homesync # under systemd
 ```
 
-Without systemd, `pkill -USR1 homesync-client` does the same. It logs
+It logs
 `sync requested` and runs one cycle. Restarting the service also works, but it
 throws away a healthy event stream and a warm state to ask a question the
 running process could answer.
@@ -213,9 +237,10 @@ Signals: `SIGUSR1` syncs now; `SIGINT` and `SIGTERM` stop it.
 
 ## How it behaves
 
-**Both ways, continuously.** inotify gives immediacy; a poll every five minutes
-is what actually guarantees correctness, because inotify drops events under
-load and knows nothing about what happened while the process was down. A
+**Both ways, continuously.** The file-system watcher — inotify on Linux, kqueue
+on macOS and the BSDs — gives immediacy; a poll every five minutes is what
+actually guarantees correctness, because those interfaces drop events under
+load and know nothing about what happened while the process was down. A
 server-sent event stream carries the other direction, and losing it never loses
 data: the next cycle asks for everything since the revision it holds.
 
@@ -283,15 +308,23 @@ Against a server in Docker:
 
 ```bash
 docker compose up -d --build
-TOKEN=$(docker compose exec -T homesync homesync device add linux linux | grep -oE '[A-Za-z0-9_-]{43}')
+TOKEN=$(docker compose exec -T homesync homesync device add cli cli | grep -oE '[A-Za-z0-9_-]{43}')
 
-cd clients/linux && go test ./...
+cd clients/cli
+go test ./...
+go build -o /tmp/homesync-client ./cmd/homesync-client
 
 cd ../../conformance
-go build -o /tmp/homesync-client ../clients/linux/cmd/homesync-client
-HOMESYNC_URL=http://localhost:8420 HOMESYNC_TOKEN=$TOKEN HOMESYNC_SCOPE=linux \
+HOMESYNC_URL=http://localhost:8420 HOMESYNC_TOKEN=$TOKEN HOMESYNC_SCOPE=cli \
   HOMESYNC_CLIENT_CMD=/tmp/homesync-client go test -run TestClientConformance ./...
 ```
+
+Build the binary from `clients/cli`, not by relative path from `conformance`:
+they are separate modules, and `go build ../clients/cli/...` refuses with
+*outside main module*.
+
+That works on a Mac as well as on Linux, against the same server in Docker, and
+is how the claim in the first paragraph was checked rather than assumed.
 
 The conformance run is the one that matters. It drives the real binary against
 a real server and checks both directions, deletions, nested directories, ignore

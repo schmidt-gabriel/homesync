@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/schmidt-gabriel/homesync/clients/linux/internal/sync"
+	"github.com/schmidt-gabriel/homesync/clients/cli/internal/sync"
 )
 
 const usage = `homesync-client — keeps a folder in step with a HomeSync server
@@ -37,7 +37,7 @@ Flags:
 
 Send SIGUSR1 to sync now:
 
-  systemctl --user kill -s USR1 homesync   # or: pkill -USR1 homesync-client
+  pkill -USR1 homesync-client   # or, under systemd: systemctl --user kill -s USR1 homesync
 
 The token is minted on the server with "homesync device add <name>" and is
 shown once. Put it in HOMESYNC_TOKEN rather than on the command line, where it

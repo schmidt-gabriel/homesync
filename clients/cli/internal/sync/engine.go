@@ -43,7 +43,7 @@ func (c *Config) applyDefaults() {
 		if host, err := os.Hostname(); err == nil {
 			c.DeviceName = host
 		} else {
-			c.DeviceName = "linux"
+			c.DeviceName = "cli"
 		}
 	}
 }

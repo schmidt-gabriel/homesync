@@ -9,14 +9,20 @@ more than one machine reaches the same files; clients keep one number and ask
 ```
 server/        Go: HTTP API, SQLite index, fsnotify, trash, embedded admin UI
 clients/mac/   Swift: HomeSyncKit (the engine, no UI) + HomeSync.xcodeproj
-clients/linux/ Go: homesync-client daemon + systemd user unit
+clients/cli/   Go: homesync-client daemon; Linux, macOS, the BSDs
 conformance/   Go: the executable contract, run against any client
 docs/PROTOCOL.md   The contract itself. Written before the second client.
-.github/workflows/ server.yml, mac.yml, linux.yml, release.yml
+.github/workflows/ server.yml, mac.yml, cli.yml, release.yml
 ```
 
 `clients/mac/`, not `mac/`: another platform goes in beside it without moving
 anything.
+
+`clients/cli/`, not `clients/linux/`: one binary, no cgo, and the same source
+runs on every Unix. Windows is the exception — `SIGUSR1` is how a sync is asked
+for, and there is no equivalent, so it does not compile there. The
+Linux-specific part is packaging, and it lives in `clients/cli/linux/`:
+`homesync.service`, the systemd user unit.
 
 ## Working agreements
 
@@ -55,10 +61,12 @@ cd conformance && HOMESYNC_URL=http://localhost:8420 HOMESYNC_TOKEN=$TOKEN go te
 cd clients/mac/HomeSyncKit && \
   HOMESYNC_TEST_URL=http://localhost:8420 HOMESYNC_TEST_TOKEN=$TOKEN swift test
 
-# The Linux client: unit tests, then the real binary driven end to end
-cd clients/linux && go test -race ./...
-cd conformance && go build -o /tmp/homesync-client ../clients/linux/cmd/homesync-client && \
-  HOMESYNC_URL=http://localhost:8420 HOMESYNC_TOKEN=$TOKEN HOMESYNC_SCOPE=linux \
+# The CLI client: unit tests, then the real binary driven end to end
+# Build from the client's own module — it is a separate module, so building it
+# by relative path from conformance/ fails with "outside main module".
+cd clients/cli && go test -race ./... && go build -o /tmp/homesync-client ./cmd/homesync-client
+cd conformance && \
+  HOMESYNC_URL=http://localhost:8420 HOMESYNC_TOKEN=$TOKEN HOMESYNC_SCOPE=cli \
   HOMESYNC_CLIENT_CMD=/tmp/homesync-client go test -run TestClientConformance ./...
 
 # The app
