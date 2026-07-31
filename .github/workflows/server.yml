@@ -154,6 +154,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # git describe needs the tags, and the default checkout fetches none.
+          fetch-depth: 0
 
       # arm64 matters here: a Raspberry Pi or an Apple-silicon host would
       # otherwise have to emulate, or build the image itself.
@@ -167,6 +170,21 @@ jobs:
           username: ${{ github.actor }}
           # Provided by Actions; no secret to create or rotate.
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # metadata-action's version output is the branch name for a build off
+      # main, so every published image called itself "main" and answered
+      # "which build is this?" with nothing anyone could compare.
+      #
+      # Images are only ever built here, from main, so none of them is a
+      # release and none should claim to be one. Describing from the last tag
+      # says both things at once: 1.1.2-4-gee76bdb is four commits past 1.1.2,
+      # and is visibly not 1.1.2.
+      - name: Work out the version
+        id: version
+        run: |
+          described="$(git describe --tags --always)"
+          echo "value=${described#v}" >> "$GITHUB_OUTPUT"
+          echo "publishing as ${described#v}"
 
       - name: Tags and labels
         id: meta
@@ -184,10 +202,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./server
-          # So the admin page names the release the image came from, rather
-          # than reporting every published build as "dev".
           build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
+            VERSION=${{ steps.version.outputs.value }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

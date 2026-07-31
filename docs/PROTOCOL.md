@@ -212,8 +212,10 @@ build it is running without holding a token for it.
 { "status": "ok", "rev": 42, "version": "1.1.2" }
 ```
 
-`version` is the release the binary was built from. A server built from a
-working copy rather than a tag reports `"local"`.
+`version` is the release the binary was built from, such as `"1.1.2"`. A build
+that is not a release describes itself from the last one: `"1.1.2-4-gee76bdb"`
+is four commits past 1.1.2. A binary built from a working copy reports
+`"local"`.
 
 ### `GET /v1/changes?since=<rev>&limit=<n>`
 
