@@ -35,6 +35,10 @@ Flags:
   -device  Name used in conflict copies (or HOMESYNC_DEVICE, default hostname)
   -once    Run one cycle and exit, rather than staying up
 
+Send SIGUSR1 to sync now:
+
+  systemctl --user kill -s USR1 homesync   # or: pkill -USR1 homesync-client
+
 The token is minted on the server with "homesync device add <name>" and is
 shown once. Put it in HOMESYNC_TOKEN rather than on the command line, where it
 would be visible to anyone who can list processes.
@@ -125,6 +129,29 @@ func serve(ctx context.Context, engine *sync.Engine, api *sync.Client) error {
 		default:
 		}
 	}
+
+	// Sync now, on demand. A daemon has no menu to click, and the alternative
+	// people reach for is restarting the service, which throws away a healthy
+	// event stream and a warm state to ask a question the running process could
+	// have answered.
+	//
+	// SIGUSR1 because it is the signal with no other meaning; without this the
+	// daemon simply ignores it, which is indistinguishable from a sync that
+	// found nothing to do.
+	syncNow := make(chan os.Signal, 1)
+	signal.Notify(syncNow, syscall.SIGUSR1)
+	defer signal.Stop(syncNow)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-syncNow:
+				slog.Info("sync requested")
+				request()
+			}
+		}
+	}()
 
 	watcher, err := sync.NewWatcher(engine.Store().Root(), engine.Rules, slog.Default())
 	if err != nil {
