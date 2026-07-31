@@ -22,7 +22,7 @@ nothing: no client tracks any other client.
 ```
 server/        Go server and its Docker image
 clients/mac/   macOS menu-bar client (Swift)
-clients/linux/ Linux daemon (Go)
+clients/cli/   command-line daemon (Go): Linux, macOS, the BSDs
 docs/          PROTOCOL.md — the contract, and the source of truth
 conformance/   executable protocol test suite
 ```
@@ -177,9 +177,13 @@ xcodebuild -project HomeSync.xcodeproj -scheme HomeSync -configuration Release \
 cp -R build/Build/Products/Release/HomeSync.app /Applications/
 ```
 
-## Installing the Linux client
+## Installing the CLI client
 
-One static binary and a systemd user unit.
+One static binary. It is the client for anything without a native app: a
+headless box, a Raspberry Pi, a Mac you would rather drive from the terminal.
+Linux, macOS and the BSDs all build and run it; Windows does not, because the
+sync-now signal is `SIGUSR1`. The systemd unit below is Linux packaging around
+the same binary.
 
 1. **Register the machine** and copy the token, same as for a Mac:
 
@@ -187,11 +191,11 @@ One static binary and a systemd user unit.
    docker compose exec homesync homesync device add thinkpad
    ```
 
-2. **Build and install.** There is no cgo, so it cross-compiles from anywhere:
-   `GOOS=linux GOARCH=arm64` produces a binary for a Raspberry Pi.
+2. **Build and install.** There is no cgo, so it cross-compiles from anywhere to
+   anywhere: `GOOS=linux GOARCH=arm64` produces a binary for a Raspberry Pi.
 
    ```bash
-   cd clients/linux
+   cd clients/cli
    go build -o homesync-client ./cmd/homesync-client
    sudo install -m 755 homesync-client /usr/local/bin/
    ```
@@ -205,8 +209,9 @@ One static binary and a systemd user unit.
    homesync-client -once
    ```
 
-4. **Then make it a service.** The token goes in an env file rather than in the
-   unit or on the command line:
+4. **Then make it a service.** On Linux that is a systemd user unit; elsewhere,
+   whatever supervises your user processes. The token goes in an env file
+   rather than in the unit or on the command line:
 
    ```bash
    mkdir -p ~/.config/homesync ~/.config/systemd/user
@@ -214,14 +219,14 @@ One static binary and a systemd user unit.
      "$HOMESYNC_URL" "$HOMESYNC_TOKEN" "$HOME/HomeSync" > ~/.config/homesync/env
    chmod 600 ~/.config/homesync/env
 
-   cp homesync.service ~/.config/systemd/user/
+   cp linux/homesync.service ~/.config/systemd/user/
    systemctl --user enable --now homesync.service
    journalctl --user -u homesync -f
    ```
 
 The folder defaults to `~/HomeSync`; set `HOMESYNC_ROOT` to put it elsewhere.
-`systemctl --user kill -s USR1 homesync` syncs now, without waiting for the
-five-minute poll. [`clients/linux/README.md`](clients/linux/README.md) covers
+`pkill -USR1 homesync-client` syncs now, without waiting for the five-minute
+poll. [`clients/cli/README.md`](clients/cli/README.md) covers
 the rest: where the state lives, moving the folder, reading the logs, and what
 to do when something looks wrong.
 
@@ -247,7 +252,7 @@ Windows cannot represent) and the recommended client loop, including the three
 mistakes that are easy to make.
 
 Prove the result against `conformance/` rather than against another client's
-behaviour. `clients/linux/` is the worked example: point
+behaviour. `clients/cli/` is the worked example: point
 `HOMESYNC_CLIENT_CMD` at any binary that takes `HOMESYNC_URL`,
 `HOMESYNC_TOKEN` and `HOMESYNC_ROOT` from its environment and keeps syncing
 until it is killed.
@@ -256,6 +261,6 @@ until it is killed.
 
 ```bash
 cd server && go test ./... && go vet ./...
-cd clients/linux && go test ./... && go vet ./...
+cd clients/cli && go test ./... && go vet ./...
 cd clients/mac/HomeSyncKit && swift test
 ```

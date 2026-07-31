@@ -1,4 +1,4 @@
-module github.com/schmidt-gabriel/homesync/clients/linux
+module github.com/schmidt-gabriel/homesync/clients/cli
 
 go 1.26.4
 

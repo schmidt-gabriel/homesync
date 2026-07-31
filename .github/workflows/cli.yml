@@ -1,4 +1,4 @@
-name: Linux client
+name: CLI client
 
 # Scoped to what this workflow validates. The server is included because the
 # conformance job runs the client against a real one, so a server change can
@@ -7,20 +7,20 @@ on:
   push:
     branches: [main]
     paths:
-      - 'clients/linux/**'
+      - 'clients/cli/**'
       - 'conformance/**'
       - 'server/**'
-      - '.github/workflows/linux.yml'
+      - '.github/workflows/cli.yml'
   pull_request:
     paths:
-      - 'clients/linux/**'
+      - 'clients/cli/**'
       - 'conformance/**'
       - 'server/**'
-      - '.github/workflows/linux.yml'
+      - '.github/workflows/cli.yml'
   workflow_dispatch:
 
 concurrency:
-  group: linux-${{ github.ref }}
+  group: cli-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -34,11 +34,11 @@ jobs:
         with:
           go-version: '1.26'
           cache-dependency-path: |
-            clients/linux/go.sum
+            clients/cli/go.sum
             conformance/go.sum
 
       - name: Check formatting
-        working-directory: clients/linux
+        working-directory: clients/cli
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -48,23 +48,26 @@ jobs:
           fi
 
       - name: Vet
-        working-directory: clients/linux
+        working-directory: clients/cli
         run: go vet ./...
 
       # -race because the watcher, the event stream and the poll timer all
       # ask for a cycle from different goroutines.
       - name: Unit tests
-        working-directory: clients/linux
+        working-directory: clients/cli
         run: go test -race ./...
 
-      # No cgo anywhere in the client, so this is a plain cross-compile and
-      # worth checking: a Raspberry Pi is the likeliest place for this to run.
+      # No cgo anywhere in the client, so this is a plain cross-compile. The
+      # list is what the name claims: every target it is said to run on gets
+      # built here, or the claim is only a directory name. Windows is absent
+      # because SIGUSR1 does not exist there — see the README.
       - name: Cross-compile
-        working-directory: clients/linux
+        working-directory: clients/cli
         run: |
-          for arch in amd64 arm64 arm; do
-            GOOS=linux GOARCH=$arch go build -o /dev/null ./... || exit 1
-            echo "linux/$arch ok"
+          for target in linux/amd64 linux/arm64 linux/arm \
+                        darwin/amd64 darwin/arm64 freebsd/amd64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./... || exit 1
+            echo "$target ok"
           done
 
   conformance:
@@ -77,11 +80,11 @@ jobs:
         with:
           go-version: '1.26'
           cache-dependency-path: |
-            clients/linux/go.sum
+            clients/cli/go.sum
             conformance/go.sum
 
       - name: Build the client
-        working-directory: clients/linux
+        working-directory: clients/cli
         run: go build -o "${{ runner.temp }}/homesync-client" ./cmd/homesync-client
 
       - name: Build the server image
@@ -91,7 +94,7 @@ jobs:
       # runs unprivileged as uid 1000 and could not then write to it.
       - name: Prepare the volumes
         run: |
-          mkdir -p data/linux config
+          mkdir -p data/cli config
           chmod -R 777 data config
 
       - name: Start the server
@@ -109,7 +112,7 @@ jobs:
 
       - name: Register a device
         run: |
-          TOKEN=$(docker compose exec -T homesync homesync device add linux linux \
+          TOKEN=$(docker compose exec -T homesync homesync device add cli cli \
             | grep -oE '[A-Za-z0-9_-]{43}')
           if [ -z "$TOKEN" ]; then
             echo "could not register a device"
@@ -125,7 +128,7 @@ jobs:
         working-directory: conformance
         env:
           HOMESYNC_URL: http://localhost:8420
-          HOMESYNC_SCOPE: linux
+          HOMESYNC_SCOPE: cli
           HOMESYNC_CLIENT_CMD: ${{ runner.temp }}/homesync-client
         run: go test -v -run TestClientConformance ./...
 
