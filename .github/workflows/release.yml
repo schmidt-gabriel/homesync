@@ -11,16 +11,140 @@ on:
     tags: ['v*']
 
 jobs:
-  # Reuses the client workflow rather than repeating the build, so the binary
-  # attached to a release is produced and verified by exactly the same steps
-  # that guard every commit.
+  # Builds the bundle here rather than reusing mac.yml. That workflow tests the
+  # engine and runs the client conformance suite on the way to the same steps,
+  # and those already ran when this commit landed on main; what a tag needs is
+  # the bundle, stamped with the tag.
   build:
-    name: Build and verify
-    uses: ./.github/workflows/mac.yml
-    with:
-      # The tag as-is; the leading "v" is stripped on the other side, where a
-      # shell can do it. GitHub expressions have no substring function.
-      version: ${{ github.ref_name }}
+    name: Build the app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: clients/mac
+        # CODE_SIGNING_ALLOWED=NO because the runner holds no Developer ID
+        # certificate. The artifact is therefore unsigned: see the note at the
+        # end of mac.yml.
+        #
+        # v1.0.1 -> 1.0.1. CFBundleShortVersionString wants digits and dots, so
+        # a leading "v" makes it invalid, and a bundle that kept the project's
+        # own value would have every release calling itself 1.0.
+        run: |
+          build_once() {
+            xcodebuild \
+              -project HomeSync.xcodeproj \
+              -scheme HomeSync \
+              -configuration Release \
+              -derivedDataPath build \
+              CODE_SIGNING_ALLOWED=NO \
+              CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+              MARKETING_VERSION="${GITHUB_REF_NAME#v}" \
+              build
+          }
+
+          # actool crashes on the .icon file every so often, with an internal
+          # NSArray exception rather than anything wrong in the asset: the same
+          # commit built on the previous run and again on a retry. Left alone
+          # it turns publishing a release into a coin flip, so a failure is
+          # retried once from a clean derived data directory before being
+          # believed.
+          if ! build_once; then
+            echo "::warning::build failed, retrying once from a clean state"
+            rm -rf build
+            build_once
+          fi
+
+      - name: Package
+        working-directory: clients/mac
+        run: |
+          APP=build/Build/Products/Release/HomeSync.app
+          if [ ! -d "$APP" ]; then
+            echo "no app bundle at $APP"
+            exit 1
+          fi
+          # ditto rather than zip: it preserves the bundle's symlinks and
+          # resource forks, which a plain zip mangles.
+          ditto -c -k --sequesterRsrc --keepParent "$APP" HomeSync.zip
+
+      # Before uploading, so a broken bundle is never published as if it were
+      # good. ditto to unpack, matching how it was packed.
+      - name: Verify the artifact
+        working-directory: clients/mac
+        run: |
+          rm -rf verify && mkdir verify
+          ditto -x -k HomeSync.zip verify
+          test -x verify/HomeSync.app/Contents/MacOS/HomeSync
+          # A menu bar app that lost LSUIElement would come back with a Dock
+          # icon and a stray window, which is a silent regression otherwise.
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' verify/HomeSync.app/Contents/Info.plist)" = "true"
+          # The whole point of stamping it: a release that shipped as 1.0 would
+          # be indistinguishable from every other one in a bug report.
+          stamped="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' verify/HomeSync.app/Contents/Info.plist)"
+          echo "version: ${stamped}"
+          test "${stamped}" = "${GITHUB_REF_NAME#v}"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: HomeSync-app
+          path: clients/mac/HomeSync.zip
+          if-no-files-found: error
+
+  # The image is published from tags only. One published on every merge made
+  # "latest" mean "whatever landed most recently", which is not a thing to
+  # point a server at. Every pull request still builds the image and runs the
+  # suite against it, so nothing about it is first tried here.
+  image:
+    name: Publish the server image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # arm64 matters here: a Raspberry Pi or an Apple-silicon host would
+      # otherwise have to emulate, or build the image itself.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # Provided by Actions; no secret to create or rotate.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # latest unconditionally: this job runs for tags and nothing else, so
+          # the newest run is by definition the newest release.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+            type=sha,format=long
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./server
+          # v1.2.3 -> 1.2.3, so the server reports the release it came from on
+          # /healthz and in the admin page.
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   publish:
     name: Publish

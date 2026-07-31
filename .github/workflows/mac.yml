@@ -4,8 +4,8 @@ name: macOS client
 # conformance job runs that suite against the headless binary.
 #
 # Releases are not here: a tag carries no changed paths of its own, so a
-# filtered trigger would never fire for one. release.yml handles tags and
-# reuses this workflow rather than duplicating the build.
+# filtered trigger would never fire for one. release.yml handles tags, and
+# builds its own bundle so it can stamp the tag into it.
 on:
   push:
     branches: [main]
@@ -18,15 +18,6 @@ on:
       - 'clients/mac/**'
       - 'conformance/**'
       - '.github/workflows/mac.yml'
-  workflow_call:
-    inputs:
-      version:
-        description: >-
-          Stamped into the built bundle. Without it the app reports whatever is
-          hard-coded in the project, so every release would call itself 1.0.
-        type: string
-        required: false
-        default: ''
   workflow_dispatch:
 
 concurrency:
@@ -114,21 +105,11 @@ jobs:
         # CODE_SIGNING_ALLOWED=NO because the runner holds no Developer ID
         # certificate. The artifact is therefore unsigned: see the note below.
         #
-        # The version is stamped from the release tag when there is one, so the
-        # bundle agrees with the release it came from. A plain CI build keeps
-        # the project's own value.
-        env:
-          VERSION: ${{ inputs.version }}
+        # No version is stamped here. This build is not a release and must not
+        # claim to be one, so it keeps the project's own value; release.yml
+        # stamps the tag into the bundle it publishes.
         run: |
-          MARKETING=""
-          if [ -n "$VERSION" ]; then
-            # v1.0.1 -> 1.0.1. CFBundleShortVersionString wants digits and dots;
-            # a leading "v" makes it invalid.
-            MARKETING="MARKETING_VERSION=${VERSION#v}"
-          fi
-
           build_once() {
-            # shellcheck disable=SC2086
             xcodebuild \
               -project HomeSync.xcodeproj \
               -scheme HomeSync \
@@ -136,7 +117,6 @@ jobs:
               -derivedDataPath build \
               CODE_SIGNING_ALLOWED=NO \
               CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
-              $MARKETING \
               build
           }
 

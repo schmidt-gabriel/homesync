@@ -38,17 +38,18 @@ prepared on the host first. Files live in `./data`, the index in `./config`.
 
 ### Using the published image
 
-CI publishes a multi-architecture image (amd64 and arm64) to GitHub Packages on
-every push to `main`, so a server does not have to build anything:
+CI publishes a multi-architecture image (amd64 and arm64) to GitHub Packages
+for every tagged release, so a server does not have to build anything:
 
 ```bash
 docker pull ghcr.io/schmidt-gabriel/homesync:latest
 ```
 
 To run that instead of building locally, replace `build: ./server` in
-`compose.yaml` with `image: ghcr.io/schmidt-gabriel/homesync:latest`. Tagged
-releases also publish `v1.2.3` and `v1.2` tags; pin to one of those rather than
-`latest` if you would rather choose when to upgrade.
+`compose.yaml` with `image: ghcr.io/schmidt-gabriel/homesync:latest`. Each
+release also publishes `1.2.3` and `1.2` tags; pin to one of those rather than
+`latest` if you would rather choose when to upgrade. A server reports which one
+it is running on `/healthz` and at the top of the admin page.
 
 Register a machine and get its token:
 
