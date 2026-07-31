@@ -93,8 +93,11 @@ jobs:
 
   # The image is published from tags only. One published on every merge made
   # "latest" mean "whatever landed most recently", which is not a thing to
-  # point a server at. Every pull request still builds the image and runs the
-  # suite against it, so nothing about it is first tried here.
+  # point a server at.
+  #
+  # It is proven here before it is pushed, against the running container rather
+  # than a binary built beside it, so a release cannot be the first place a
+  # packaging mistake shows up.
   image:
     name: Publish the server image
     runs-on: ubuntu-latest
@@ -104,6 +107,83 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: conformance/go.sum
+
+      # Built and exercised before anything is pushed. A release is the one
+      # artifact people pull without looking, so the suite runs against the
+      # image itself rather than against a binary compiled next to it.
+      #
+      # This is a local, single-architecture build; the push below rebuilds for
+      # both architectures from the same Dockerfile and context, reusing the
+      # layer cache.
+      - name: Build the image
+        run: HOMESYNC_VERSION="${GITHUB_REF_NAME#v}" docker compose build
+
+      # Docker creates a missing bind-mount source as root, but the container
+      # runs unprivileged as uid 1000, so it would be unable to write. Creating
+      # the directories up front avoids that.
+      - name: Prepare the volumes
+        run: |
+          mkdir -p data/ci config
+          chmod -R 777 data config
+
+      - name: Start the server
+        run: |
+          docker compose up -d
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8420/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server never became healthy"
+          docker compose logs
+          exit 1
+
+      # The stamp is the reason this job passes a build argument at all, and a
+      # release that reported the wrong version would be discovered by whoever
+      # asked the server which build it was running.
+      - name: The version it reports must be the tag
+        run: |
+          reported=$(curl -sf http://localhost:8420/healthz \
+            | sed -E 's/.*"version":"([^"]*)".*/\1/')
+          echo "reported: ${reported}"
+          test "${reported}" = "${GITHUB_REF_NAME#v}"
+
+      # The scope is passed explicitly rather than left to the default, so it
+      # cannot drift from HOMESYNC_SCOPE below. The suite needs to know it: a
+      # device only sees inside its own subtree, so the checks that write
+      # straight into the volume have to land there to be visible at all.
+      - name: Register a device
+        run: |
+          TOKEN=$(docker compose exec -T homesync homesync device add ci ci \
+            | grep -oE '[A-Za-z0-9_-]{43}')
+          if [ -z "$TOKEN" ]; then
+            echo "could not register a device"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "HOMESYNC_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Conformance (built image)
+        working-directory: conformance
+        env:
+          HOMESYNC_URL: http://localhost:8420
+          HOMESYNC_DATA_DIR: ${{ github.workspace }}/data
+          HOMESYNC_SCOPE: ci
+        run: go test ./...
+
+      - name: Server logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop the server
+        if: always()
+        run: docker compose down -v
 
       # arm64 matters here: a Raspberry Pi or an Apple-silicon host would
       # otherwise have to emulate, or build the image itself.
