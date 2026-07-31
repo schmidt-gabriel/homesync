@@ -3,13 +3,6 @@
 A daemon that keeps a folder in step with a HomeSync server. One static binary,
 no runtime to install, no cgo.
 
-It is not a Linux client, which is why it no longer lives in a directory called
-that: the same source builds and runs on Linux, macOS and the BSDs. Windows is
-the exception, and not a small one — the sync-now signal is `SIGUSR1`, which
-that platform has no equivalent of, so it does not compile there at all. What
-is Linux-specific here is the packaging, not the program: the systemd unit in
-[`linux/`](linux/), and the commands in this file that drive it.
-
 It was written against [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md) rather than
 against the Mac client, which is the reason the protocol was written down
 first. The two agree because they both implement the document, and both prove
