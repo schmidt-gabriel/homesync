@@ -300,6 +300,7 @@ extension SyncState {
         switch self {
         case .idle: return "checkmark.circle"
         case .syncing: return "arrow.triangle.2.circlepath"
+        case .offline: return "wifi.slash"
         case .paused: return "pause.circle"
         case .failed: return "exclamationmark.triangle"
         }
@@ -315,6 +316,8 @@ extension SyncState {
                 return "Syncing…"
             }
             return "\(progress.phase.verb) \(progress.completed) of \(progress.total) · \(percentage)%"
+        case .offline(let reason):
+            return reason
         case .paused(let reason):
             return reason
         case .failed(let reason):
@@ -324,7 +327,7 @@ extension SyncState {
 
     var needsAttention: Bool {
         switch self {
-        case .paused, .failed: return true
+        case .offline, .paused, .failed: return true
         case .idle, .syncing: return false
         }
     }
