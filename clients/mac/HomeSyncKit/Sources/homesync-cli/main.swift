@@ -84,12 +84,24 @@ log("syncing \(rootPath) with \(serverURL)")
 // summary line only when something actually happened.
 let reporter = Task {
     var lastReported: Date?
+    // What is wrong is printed when it changes, not every two seconds. Being
+    // off the network lasts as long as the walk to the car, and a line per
+    // tick would bury everything else in the log.
+    var lastProblem: String?
+
+    func report(problem: String) {
+        guard problem != lastProblem else { return }
+        lastProblem = problem
+        log(problem)
+    }
+
     while !Task.isCancelled {
         try? await Task.sleep(for: .seconds(2))
 
         let state = await engine.currentState
         if case .idle(let at) = state, let at, at != lastReported {
             lastReported = at
+            lastProblem = nil
             let conflicts = await engine.conflicts
             let count = await engine.syncedFileCount
             if conflicts.isEmpty {
@@ -101,10 +113,12 @@ let reporter = Task {
         } else if case .syncing(let progress) = state, let progress,
                   let pct = progress.percentage {
             log("\(progress.phase.verb) \(progress.completed)/\(progress.total) · \(pct)%")
+        } else if case .offline(let reason) = state {
+            report(problem: "offline: \(reason)")
         } else if case .paused(let reason) = state {
-            log("PAUSED: \(reason)")
+            report(problem: "PAUSED: \(reason)")
         } else if case .failed(let reason) = state {
-            log("error: \(reason)")
+            report(problem: "error: \(reason)")
         }
     }
 }

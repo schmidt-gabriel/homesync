@@ -177,6 +177,10 @@ public enum SyncState: Sendable, Equatable {
     /// `progress` is nil for a cycle small enough that counting it would be
     /// noise, and for the moment before the work is known.
     case syncing(progress: SyncProgress?)
+    /// The server cannot be reached at all. Its own state rather than a
+    /// `failed`, because it is not a fault and needs no decision: the machine
+    /// is off the network, and syncing resumes the moment it is back.
+    case offline(reason: String)
     case paused(reason: String)
     case failed(String)
 }

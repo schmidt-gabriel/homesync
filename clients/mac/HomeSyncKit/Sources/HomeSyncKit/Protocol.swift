@@ -131,6 +131,46 @@ public enum SyncError: Error, Sendable {
     }
 }
 
+extension SyncError {
+    /// What to tell someone when the server could not be reached *at all*, or
+    /// nil when it answered and the failure is about the request.
+    ///
+    /// The difference is the one a user can act on. A laptop that has left the
+    /// house, or dropped the VPN, is not a fault in HomeSync, in the token or
+    /// in the files: it is a condition that ends by itself, and saying so is
+    /// the whole of what the interface can usefully do about it.
+    ///
+    /// It has to be recognised here rather than reported verbatim. A
+    /// `URLError` describes itself as a page of `_kCFStreamErrorCodeKey` and
+    /// `NSErrorFailingURLStringKey`, and that page is what the menu bar used
+    /// to show — filling it top to bottom to say "the network went away".
+    ///
+    /// Takes any error, not a `SyncError`: the event stream reads bytes
+    /// straight off `URLSession`, so the failure arrives unwrapped.
+    public static func unreachableReason(for error: any Error) -> String? {
+        if let syncError = error as? SyncError {
+            guard case .transport(let underlying) = syncError else { return nil }
+            return unreachableReason(for: underlying)
+        }
+
+        guard let url = error as? URLError else { return nil }
+
+        switch url.code {
+        case .notConnectedToInternet, .internationalRoamingOff, .dataNotAllowed:
+            return "No network connection. HomeSync will pick up where it left off."
+        case .cannotFindHost, .dnsLookupFailed:
+            return "Cannot find the server. If it is on your home network, join that network or the VPN."
+        case .cannotConnectToHost, .networkConnectionLost, .timedOut, .resourceUnavailable:
+            return "Cannot reach the server. Check that you are on its network or the VPN, and that it is running."
+        default:
+            // Anything else — a bad certificate, a refused redirect — is a
+            // real fault and has to be reported as one, not excused as a
+            // network that will come back on its own.
+            return nil
+        }
+    }
+}
+
 extension SyncError: CustomStringConvertible {
     public var description: String {
         switch self {

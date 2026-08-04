@@ -1,5 +1,23 @@
 import Foundation
 
+extension URLSession {
+    /// What a client talks over when it is not handed a session.
+    ///
+    /// Not `URLSession.shared`, whose sixty-second timeout is a very long time
+    /// to say nothing. A server on a home network does not refuse a connection
+    /// when you are away from it — the packets go nowhere and the attempt
+    /// simply hangs — so that timeout is exactly how long someone off the VPN
+    /// waits before the client can tell them anything at all.
+    ///
+    /// It is an *idle* timeout, restarted whenever bytes move, so shortening it
+    /// puts no limit on how long a large file may take to transfer.
+    public static let homeSync: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 15
+        return URLSession(configuration: configuration)
+    }()
+}
+
 /// Talks to a HomeSync server. Stateless apart from its configuration, so it
 /// is safe to share.
 public struct APIClient: Sendable {
@@ -7,7 +25,7 @@ public struct APIClient: Sendable {
     private let token: String
     private let session: URLSession
 
-    public init(baseURL: URL, token: String, session: URLSession = .shared) {
+    public init(baseURL: URL, token: String, session: URLSession = .homeSync) {
         self.baseURL = baseURL
         self.token = token
         self.session = session

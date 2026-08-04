@@ -18,10 +18,15 @@ public actor SyncEngine {
     /// request is honoured once rather than dropped or queued up N deep.
     private var syncRequestedAgain = false
 
+    /// Set once the server has proved unreachable, and held until something
+    /// gets through. Held, rather than recomputed per cycle, because a failed
+    /// cycle is retried immediately — see `recordFailure`.
+    private var isOffline = false
+
     private var status: SyncState = .idle(lastSync: nil)
     private var knownConflicts: [String] = []
 
-    public init(configuration: Configuration, session: URLSession = .shared) throws {
+    public init(configuration: Configuration, session: URLSession = .homeSync) throws {
         self.configuration = configuration
         self.api = APIClient(
             baseURL: configuration.serverURL, token: configuration.token, session: session)
@@ -85,7 +90,11 @@ public actor SyncEngine {
             } catch {
                 // Losing the stream never loses data: the next cycle asks for
                 // everything since our own revision and catches up in one go.
-                setStatusIfIdle(.failed("event stream: \(error)"))
+                //
+                // It is still worth saying why nothing is arriving — but only
+                // when no cycle is running, since a cycle has something more
+                // specific to say about the same outage.
+                if !isSyncing { recordFailure(error, describedAs: "event stream") }
             }
 
             if Task.isCancelled { return }
@@ -97,11 +106,19 @@ public actor SyncEngine {
     /// The backstop for when the event stream is down.
     private func pollPeriodically() async {
         while !Task.isCancelled {
-            try? await Task.sleep(for: configuration.pollInterval)
+            // A machine that could not reach the server is tried again far
+            // sooner than one that is merely idle. The network coming back is
+            // not an event anything here can observe, and the ordinary
+            // interval would leave five minutes of not syncing — and five
+            // minutes of saying "offline" — after it already had.
+            try? await Task.sleep(
+                for: isOffline ? Self.offlineRetryInterval : configuration.pollInterval)
             if Task.isCancelled { return }
             await requestSync()
         }
     }
+
+    private static let offlineRetryInterval = Duration.seconds(20)
 
     /// Runs a cycle, coalescing overlapping requests into one follow-up.
     private func requestSync() async {
@@ -131,7 +148,11 @@ public actor SyncEngine {
     public func syncOnce() async throws -> SyncSummary {
         guard !isSyncing else { return SyncSummary() }
         isSyncing = true
-        status = .syncing(progress: nil)
+        // Nothing is being synced while the server is out of reach, and saying
+        // otherwise is what put "Syncing…" in the menu bar for as long as the
+        // network was down. The offline state stands until a request gets
+        // through, at which point `markReachable` hands the cycle back.
+        if !isOffline { status = .syncing(progress: nil) }
         defer { isSyncing = false }
 
         // Before the pull, every time, not once at launch. The rules decide
@@ -161,9 +182,37 @@ public actor SyncEngine {
     /// message the user can act on. Overwriting it with a generic error here
     /// would replace "refusing to delete 10 files, the volume is probably not
     /// mounted" with something they cannot do anything about.
-    private func recordFailure(_ error: any Error) {
+    ///
+    /// A server that could not be reached at all gets its own state, and that
+    /// state is latched. Every failed cycle is retried at once — the watcher
+    /// and the poll timer both asked for one while this one was hanging — so a
+    /// status set here survives microseconds before the retry replaces it with
+    /// `.syncing`. That is why a laptop off the VPN sat at "Syncing…"
+    /// indefinitely: the reason was published every time, and never for long
+    /// enough for anything to read it.
+    private func recordFailure(_ error: any Error, describedAs context: String? = nil) {
         if case .paused = status { return }
-        status = .failed(String(describing: error))
+
+        if let reason = SyncError.unreachableReason(for: error) {
+            isOffline = true
+            status = .offline(reason: reason)
+            return
+        }
+
+        isOffline = false
+        let detail = String(describing: error)
+        status = .failed(context.map { "\($0): \(detail)" } ?? detail)
+    }
+
+    /// Takes the engine out of the offline state: the server answered.
+    ///
+    /// Called from the pull rather than at the end of a cycle, because it is
+    /// the first request getting through that proves the network is back — and
+    /// the rest of the cycle needs to be able to report its own progress.
+    private func markReachable() {
+        guard isOffline else { return }
+        isOffline = false
+        status = .syncing(progress: nil)
     }
 
     // MARK: - Pull
@@ -172,6 +221,8 @@ public actor SyncEngine {
         var summary = SyncSummary()
 
         let (entries, currentRev) = try await api.allChanges(since: state.lastRev)
+        markReachable()
+
         guard !entries.isEmpty else {
             state.lastRev = currentRev
             return summary
@@ -548,7 +599,22 @@ public actor SyncEngine {
     /// everywhere. Run at the start of every cycle; the version check keeps it
     /// to a parse only when the document has actually changed.
     public func refreshIgnoreRules() async {
-        guard let document = try? await api.ignoreRules() else { return }
+        let document: IgnoreDocument
+        do {
+            document = try await api.ignoreRules()
+        } catch {
+            // Not fatal in itself: the cycle carries on with the copy it has,
+            // and a rules document that fails to arrive for any reason the
+            // server gave is the pull's problem to run into.
+            //
+            // A network that is not there is different, and worth catching
+            // here. This is the first request of every cycle, so it is the
+            // first chance to say the server is out of reach — a whole timeout
+            // before the pull would reach the same conclusion.
+            if SyncError.unreachableReason(for: error) != nil { recordFailure(error) }
+            return
+        }
+
         guard document.version != state.ignoreVersion else { return }
 
         state.ignoreRules = document.rules
@@ -572,11 +638,6 @@ public actor SyncEngine {
     private func noteConflict(_ path: String) {
         guard !knownConflicts.contains(path) else { return }
         knownConflicts.append(path)
-    }
-
-    private func setStatusIfIdle(_ new: SyncState) {
-        if case .syncing = status { return }
-        status = new
     }
 
     /// `<stem>.conflict-<device>-<yyyyMMdd-HHmmss><ext>`, matching what the

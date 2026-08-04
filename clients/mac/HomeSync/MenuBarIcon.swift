@@ -33,6 +33,7 @@ struct MenuBarIcon: View {
         switch state {
         case .syncing: return "arrow.triangle.2.circlepath"
         case .idle: return "checkmark.circle"
+        case .offline: return "wifi.slash"
         case .paused: return "pause.circle"
         case .failed: return "exclamationmark.triangle"
         }
