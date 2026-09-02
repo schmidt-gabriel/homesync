@@ -373,3 +373,172 @@ func TestExecuteReportsProgressWhileStillScanning(t *testing.T) {
 		t.Error("no files were reported as seen")
 	}
 }
+
+// Stopping a run must not leave what rsync had written behind. A half-copied
+// directory sits in the snapshot list beside the complete ones, is counted by
+// retention, and restores as though it were a backup.
+func TestExecuteStoppedMidRunRemovesThePartialSnapshot(t *testing.T) {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync is not installed")
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	dest := filepath.Join(dir, "backup")
+	mustMkdir(t, dest)
+	mustWrite(t, filepath.Join(dest, ".homesync_backup_disk"), "")
+
+	// Big enough that rsync is still working when the cancel lands.
+	for d := range 30 {
+		sub := filepath.Join(source, fmt.Sprintf("dir%02d", d))
+		mustMkdir(t, sub)
+		for f := range 200 {
+			mustWrite(t, filepath.Join(sub, fmt.Sprintf("f%03d.bin", f)), strings.Repeat("x", 4096))
+		}
+	}
+
+	paths := Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	day := time.Date(2026, 5, 4, 3, 0, 0, 0, time.UTC)
+	snapshot := filepath.Join(dest, day.Format(snapshotLayout))
+
+	// Cancelled once the snapshot directory exists, which is the first moment
+	// there is anything to clean up.
+	//
+	// Deliberately not driven from the progress callback. openrsync cannot
+	// report progress, so on macOS the callback is never called at all — a
+	// version of this test that cancelled from there let the run finish
+	// untouched and then asserted nothing, passing while proving nothing.
+	watching := make(chan struct{})
+	defer close(watching)
+	go func() {
+		for {
+			if _, err := os.Stat(snapshot); err == nil {
+				cancel()
+				return
+			}
+			select {
+			case <-watching:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+
+	run := execute(ctx, paths, DefaultConfig(), TriggerManual, day, nil)
+
+	if run.Status != StatusCancelled {
+		t.Fatalf("a stopped run reported %q (%s)", run.Status, run.Error)
+	}
+	if _, err := os.Stat(snapshot); !os.IsNotExist(err) {
+		t.Errorf("the partial snapshot was left on the disk: %v", err)
+	}
+
+	// The marker is not ours to remove, whatever happens.
+	if _, err := os.Lstat(filepath.Join(dest, ".homesync_backup_disk")); err != nil {
+		t.Errorf("the disk marker went with it: %v", err)
+	}
+}
+
+// A snapshot that already finished must survive a cancelled re-run on the same
+// day. Removing it because this run was stopped would throw away a good backup
+// to clean up a directory this run never created.
+func TestExecuteStoppedRunKeepsAnExistingSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	dest := filepath.Join(dir, "backup")
+	mustMkdir(t, source)
+	mustMkdir(t, dest)
+	mustWrite(t, filepath.Join(source, "a.txt"), "content")
+	mustWrite(t, filepath.Join(dest, ".homesync_backup_disk"), "")
+
+	day := time.Date(2026, 5, 4, 3, 0, 0, 0, time.UTC)
+	existing := filepath.Join(dest, "2026-05-04")
+	mustMkdir(t, existing)
+	mustWrite(t, filepath.Join(existing, "already-here.txt"), "yesterday's work")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already stopped before rsync can do anything
+
+	run := execute(ctx, Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"},
+		DefaultConfig(), TriggerManual, day, nil)
+	if run.Status != StatusCancelled {
+		t.Fatalf("reported %q (%s)", run.Status, run.Error)
+	}
+	if _, err := os.Stat(filepath.Join(existing, "already-here.txt")); err != nil {
+		t.Fatalf("a snapshot this run did not create was deleted: %v", err)
+	}
+}
+
+// Cancelling is not failing. A streak that broke because someone stopped a
+// run would be reporting something that did not happen.
+func TestCancelledRunsDoNotBreakTheStreak(t *testing.T) {
+	runs := []Run{
+		{Status: StatusSuccess},
+		{Status: StatusCancelled},
+		{Status: StatusSuccess},
+		{Status: StatusSkipped},
+		{Status: StatusSuccess},
+		{Status: StatusFailed},
+		{Status: StatusSuccess},
+	}
+	m := buildMetrics(runs)
+	if m.Streak != 3 {
+		t.Errorf("streak = %d, want 3", m.Streak)
+	}
+	if m.Failures != 1 {
+		t.Errorf("failures = %d, want 1", m.Failures)
+	}
+}
+
+// checked has to converge on found: they count the same population, every file
+// and directory rsync walks. This was reported from a running server showing
+// "60,869 checked" beside "34,821 found" — the empty line that a carriage
+// return leaves behind was being counted as a file, roughly doubling the
+// tally, and the bar is drawn from that number.
+func TestCheckedConvergesOnFilesFound(t *testing.T) {
+	if !progressSupport() {
+		t.Skip("this rsync cannot report progress (openrsync)")
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	dest := filepath.Join(dir, "backup")
+	mustMkdir(t, dest)
+	mustWrite(t, filepath.Join(dest, ".homesync_backup_disk"), "")
+
+	for d := range 40 {
+		sub := filepath.Join(source, fmt.Sprintf("dir%02d", d), "sub")
+		mustMkdir(t, sub)
+		for f := range 80 {
+			mustWrite(t, filepath.Join(sub, fmt.Sprintf("f%02d.bin", f)), strings.Repeat("x", 1000))
+		}
+	}
+
+	var mu sync.Mutex
+	var last Progress
+	run := execute(context.Background(),
+		Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"},
+		DefaultConfig(), TriggerManual, time.Now(), func(p Progress) {
+			mu.Lock()
+			last = p
+			mu.Unlock()
+		})
+	if run.Status != StatusSuccess {
+		t.Fatalf("run failed: %s", run.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if last.FilesTotal == 0 {
+		t.Fatal("no file total was ever reported")
+	}
+	ratio := float64(last.Seen) / float64(last.FilesTotal)
+	if ratio > 1.1 || ratio < 0.9 {
+		t.Errorf("checked=%d against found=%d is a ratio of %.2f; "+
+			"they count the same files, so the bar drawn from the pair is wrong",
+			last.Seen, last.FilesTotal, ratio)
+	}
+}

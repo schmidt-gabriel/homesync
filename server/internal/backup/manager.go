@@ -26,6 +26,10 @@ type Manager struct {
 	mu      sync.Mutex
 	cfg     Config
 	running bool
+	// cancelRun stops the run in flight, and is the only way to reach the
+	// rsync process: it is started with a context derived from this, so
+	// cancelling kills the child. Non-nil only while a run is going.
+	cancelRun context.CancelFunc
 	// progress is replaced wholesale on every rsync line and read by the
 	// status endpoint. nil between runs, so the page cannot show the last
 	// run's numbers as though something were happening.
@@ -184,26 +188,35 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 		return skipped, ErrRunning
 	}
 	cfg := m.cfg
+	runCtx, cancel := context.WithCancel(ctx)
 	m.running = true
 	m.runStart = time.Now()
 	m.runReason = trigger
+	m.cancelRun = cancel
 	m.mu.Unlock()
 
 	defer func() {
+		cancel()
 		m.mu.Lock()
 		m.running = false
 		m.progress = nil
+		m.cancelRun = nil
 		m.mu.Unlock()
 	}()
 
 	slog.Info("backup starting", "trigger", trigger, "source", m.paths.Source, "dest", m.paths.Dest)
-	run := execute(ctx, m.paths, cfg, trigger, time.Now(), m.setProgress)
+	run := execute(runCtx, m.paths, cfg, trigger, time.Now(), m.setProgress)
 
-	if run.Status == StatusSuccess {
+	switch run.Status {
+	case StatusSuccess:
 		slog.Info("backup finished", "snapshot", run.Snapshot,
 			"duration", time.Duration(run.DurationMS)*time.Millisecond,
 			"pruned", len(run.Pruned), "warning", run.Warning)
-	} else {
+	case StatusCancelled:
+		// Not an error: someone asked for this.
+		slog.Info("backup stopped", "snapshot", run.Snapshot,
+			"duration", time.Duration(run.DurationMS)*time.Millisecond)
+	default:
 		slog.Error("backup failed", "snapshot", run.Snapshot, "err", run.Error)
 	}
 
@@ -223,6 +236,28 @@ func (m *Manager) setProgress(p Progress) {
 	m.mu.Lock()
 	m.progress = &p
 	m.mu.Unlock()
+}
+
+// Stop ends the run in flight and reports whether there was one. What rsync
+// had written is removed by the run itself: a half-copied directory left in
+// the list would read as a complete backup.
+func (m *Manager) Stop() bool {
+	m.mu.Lock()
+	cancel := m.cancelRun
+	m.mu.Unlock()
+
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+// ClearHistory empties the record of past runs, returning how many were
+// removed. A run in flight is unaffected: it is recorded when it finishes, so
+// clearing during one loses nothing and the run still appears afterwards.
+func (m *Manager) ClearHistory(ctx context.Context) (int64, error) {
+	return clearRuns(ctx, m.index.DB())
 }
 
 // Status is everything the admin page shows on the Backups tab.

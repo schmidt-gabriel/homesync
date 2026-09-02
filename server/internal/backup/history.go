@@ -32,6 +32,10 @@ const (
 	// StatusSkipped is a run that declined to start: another was already
 	// going. It is not a failure and does not break the success streak.
 	StatusSkipped = "skipped"
+	// StatusCancelled is a run someone stopped. Also not a failure: nothing
+	// went wrong, a person changed their mind, and a success streak that broke
+	// because of that would be reporting something that did not happen.
+	StatusCancelled = "cancelled"
 )
 
 // Run triggers.
@@ -124,6 +128,17 @@ func listRuns(ctx context.Context, db *sql.DB, limit int) ([]Run, error) {
 		runs = append(runs, run)
 	}
 	return runs, rows.Err()
+}
+
+// clearRuns empties the history and reports how many rows went. The snapshots
+// on the disk are untouched: this is the log of what happened, not the backups
+// themselves.
+func clearRuns(ctx context.Context, db *sql.DB) (int64, error) {
+	result, err := db.ExecContext(ctx, `DELETE FROM backup_runs`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // Metrics summarise the history for the cards at the top of the tab.

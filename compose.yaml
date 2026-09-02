@@ -44,6 +44,12 @@ services:
       # edit them. Only the marker is named here, because it has to match a
       # file that exists on the actual disk.
       - BACKUP_MARKER=${BACKUP_MARKER:-.homesync_backup_disk}
+      # What those two mounts are on this machine. Display only: the admin page
+      # shows these instead of /backup-source and /backup, because those are
+      # names that exist only inside the container and are no use to anyone
+      # looking for the folder on their own disk.
+      - BACKUP_SOURCE_HOST=${HOMESYNC_BACKUP_SOURCE:-${HOMESYNC_DATA:-./data}}
+      - BACKUP_DIR_HOST=${HOMESYNC_BACKUP:-./backup}
       # Whether backups run, when, and how much history to keep are set on the
       # admin page. These seed the first start and nothing after it.
       - BACKUP_ENABLED=${BACKUP_ENABLED:-false}

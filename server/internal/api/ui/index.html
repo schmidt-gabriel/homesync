@@ -276,7 +276,10 @@
       <div class="panel">
         <div class="row" style="justify-content:space-between; align-items:baseline">
           <h2 style="margin:0">Snapshots</h2>
-          <button class="action" id="run-backup">Run now</button>
+          <div class="row">
+            <button class="ghost danger" id="stop-backup" hidden>Stop</button>
+            <button class="action" id="run-backup">Run now</button>
+          </div>
         </div>
         <div id="backup-progress" hidden>
           <div class="bar" id="progress-bar"><span></span></div>
@@ -351,7 +354,14 @@
       </div>
 
       <div class="panel">
-        <h2>Recent runs</h2>
+        <div class="row" style="justify-content:space-between; align-items:baseline">
+          <h2 style="margin:0">Recent runs</h2>
+          <button class="ghost danger" id="clear-history">Clear</button>
+        </div>
+        <p class="muted" style="margin:8px 0 12px">
+          The log of what ran and when. Clearing it removes only this record; the snapshots
+          on the disk are untouched.
+        </p>
         <div class="table-scroll">
           <table>
             <thead>
@@ -920,6 +930,9 @@ function renderBackups(data) {
   const run = $("run-backup");
   run.disabled = data.running;
   run.textContent = data.running ? "Running…" : "Run now";
+  // Only offered while there is something to stop, so it cannot be pressed
+  // against nothing and get a confusing 409 back.
+  $("stop-backup").hidden = !data.running;
   renderProgress(data);
 
   if (!formTouched) fillBackupForm(config);
@@ -933,13 +946,18 @@ function renderBackups(data) {
 // because "the mount is missing" and "the path is wrong" look identical in a
 // list of paths and are fixed in completely different places.
 function renderPaths(paths, health) {
+  // The host's names for these when it has said what they are, because that is
+  // where someone goes looking for the folder. The container's own path is a
+  // fallback, not the answer: /backup-source is not on anybody's disk.
+  //
+  // The marker is not listed. It is a safety catch rather than a location, it
+  // is not something to act on while it is working, and when it is missing the
+  // banner above already says so and gives the command to fix it.
   const rows = [
-    ["Copies from", paths.source_dir, health.source_exists,
+    ["Copies from", paths.source_on_host || paths.source_dir, health.source_exists,
       health.source_exists ? "" : "nothing is mounted here"],
-    ["Writes to", paths.backup_dir, health.backup_dir_exists,
+    ["Writes to", paths.backup_dir_on_host || paths.backup_dir, health.backup_dir_exists,
       health.backup_dir_exists ? "" : "nothing is mounted here"],
-    ["Disk marker", paths.marker, health.marker_present,
-      health.marker_present ? "" : "missing, so every run refuses"],
   ];
 
   const host = $("backup-paths");
@@ -1016,20 +1034,20 @@ function renderProgress(data) {
   // goes, so the total climbs during the first seconds and the share can fall
   // — seeing the denominator move says "it found more work" instead of leaving
   // a bar that appears to run backwards for no reason.
-  // "so far" while rsync is still walking the tree: during incremental
-  // recursion the total is what it has found, not what there is, so it climbs
-  // and the share can fall. Saying which phase it is in makes that read as
-  // discovery rather than as a bar going backwards.
+  // Checked against found, which is what the bar measures. "found so far"
+  // while rsync is still walking the tree: during incremental recursion the
+  // total is what it has discovered, not what there is, so it climbs and the
+  // share can fall. Saying which phase it is in makes that read as discovery
+  // rather than as a bar going backwards.
   const parts = [
     progress.scanning
-      ? `${progress.files_done.toLocaleString()} of ${progress.files_total.toLocaleString()} files found so far`
-      : `${progress.files_done.toLocaleString()} of ${progress.files_total.toLocaleString()} files copied`,
-    formatBytes(progress.bytes),
+      ? `${progress.seen.toLocaleString()} of ${progress.files_total.toLocaleString()} files checked, still finding more`
+      : `${progress.seen.toLocaleString()} of ${progress.files_total.toLocaleString()} files checked`,
   ];
-  // The scan runs ahead of the copying, so this is usually the larger number
-  // and answers "is it still finding things?" on its own.
-  if (progress.seen > progress.files_done) {
-    parts.push(`${progress.seen.toLocaleString()} checked`);
+  // What was actually copied, which on an incremental run is a small fraction
+  // of what was checked and is the number worth seeing beside it.
+  if (progress.bytes > 0) {
+    parts.push(`${progress.files_done.toLocaleString()} copied · ${formatBytes(progress.bytes)}`);
   }
   if (elapsed) parts.push(elapsed);
   $("progress-text").textContent = parts.join(" · ");
@@ -1075,7 +1093,9 @@ function renderRuns(history) {
 
   if (history.length === 0) {
     const tr = document.createElement("tr");
-    const td = cell("Nothing has run yet.", "empty");
+    // "No runs recorded", not "nothing has run": after clearing the log, runs
+    // may well have happened and this is the only honest thing left to say.
+    const td = cell("No runs recorded.", "empty");
     td.colSpan = 5;
     tr.append(td);
     host.append(tr);
@@ -1172,6 +1192,41 @@ $("backup-form").addEventListener("submit", async (event) => {
   } catch (err) {
     status.textContent = err.message;
   }
+});
+
+$("stop-backup").addEventListener("click", async () => {
+  // Spelled out: what rsync copied so far goes with it, because a half-written
+  // snapshot in the list would read as a complete backup.
+  if (!confirm(
+    "Stop the backup that is running?\n\n" +
+    "The partly-written snapshot is deleted, since an incomplete one sitting " +
+    "beside the finished ones would restore as though it were a backup. " +
+    "Earlier snapshots are untouched.")) {
+    return;
+  }
+  try {
+    await api("/admin/api/backup/stop", { method: "POST" });
+    loadBackups();
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+$("clear-history").addEventListener("click", async () => {
+  const { history } = await api("/admin/api/backup");
+  if (history.length === 0) {
+    alert("There is nothing in the log to clear.");
+    return;
+  }
+  if (!confirm(
+    `Clear the record of ${history.length} run(s)?\n\n` +
+    "This removes the log only — every snapshot on the disk stays exactly as it is. " +
+    "The success rate and the streak start again from the next run.")) {
+    return;
+  }
+  const result = await api("/admin/api/backup/history", { method: "DELETE" });
+  loadBackups();
+  alert(`Removed ${result.removed} run(s) from the log.`);
 });
 
 $("run-backup").addEventListener("click", async () => {

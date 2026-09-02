@@ -27,9 +27,14 @@ type Progress struct {
 	// first seconds of a run that has hours left.
 	Bytes int64 `json:"bytes"`
 
-	// Percent is the share of files done. A convenience for the page, which
-	// still shows both counts: this number alone would hide that the total is
-	// what moved.
+	// Percent is Seen against FilesTotal: files checked out of files found.
+	// Deliberately not FilesDone against FilesTotal — rsync only prints a
+	// progress line when it transfers something, so that pair holds still
+	// between transfers and freezes the bar for as long as a stretch of
+	// unchanged files takes. Seen moves on every file.
+	//
+	// A convenience for the page, which shows the counts too: this number
+	// alone would hide that the denominator is what moved.
 	Percent int `json:"percent"`
 
 	// Seen counts every file rsync has said anything about, transferred or
@@ -91,11 +96,12 @@ func parseProgress(line string) (Progress, bool) {
 	if err != nil {
 		return Progress{}, false
 	}
+	// Percent is left to the caller: it is Seen against FilesTotal, and Seen
+	// is counted by the writer rather than reported on this line.
 	return Progress{
 		FilesDone:  total - remaining,
 		FilesTotal: total,
 		Bytes:      bytesDone,
-		Percent:    percentDone(total-remaining, total),
 		// ir-chk means the total is only what rsync has found so far and will
 		// keep climbing. The fraction is real but provisional, and the page
 		// says so rather than presenting it as a countdown to the end.
@@ -122,8 +128,13 @@ type progressWriter struct {
 	full    bool
 	partial []byte
 	seen    int64
-	last    Progress
-	report  func(Progress)
+	// statsStarted stops the count once rsync begins its --stats block. Those
+	// lines are not files, and counting them pushed the checked total past the
+	// found total in the last moment of a run — the bar reaching 100% and the
+	// two numbers disagreeing, both at the point someone is looking hardest.
+	statsStarted bool
+	last         Progress
+	report       func(Progress)
 }
 
 // keptLines is the tail held for parseStats. The block is about fifteen lines;
@@ -156,10 +167,28 @@ func (w *progressWriter) Write(p []byte) (int, error) {
 func (w *progressWriter) consume(line string) {
 	if progress, ok := parseProgress(line); ok {
 		progress.Seen = w.seen
+		progress.Percent = percentDone(w.seen, progress.FilesTotal)
 		w.last = progress
 		if w.report != nil {
 			w.report(progress)
 		}
+		return
+	}
+
+	// A carriage return followed by a newline ends one progress line and opens
+	// an empty one. Counting that as a file inflates the tally and, now that
+	// the bar is drawn from it, moves the bar for something that is not there.
+	if line == "" {
+		return
+	}
+
+	// The --stats block is always last and always opens with this line, so
+	// everything from here on is a summary rather than a file.
+	if strings.HasPrefix(line, "Number of files:") {
+		w.statsStarted = true
+	}
+	if w.statsStarted {
+		w.keep(line)
 		return
 	}
 
@@ -169,12 +198,21 @@ func (w *progressWriter) consume(line string) {
 	// the time that block prints there is nothing left to show.
 	w.seen++
 	if w.report != nil {
+		// The transfer figures are carried forward and only the count moves,
+		// which is the point: between two transferred files rsync says nothing
+		// about progress, and this is what keeps the bar advancing through a
+		// long stretch of unchanged ones.
 		next := w.last
 		next.Seen = w.seen
+		next.Percent = percentDone(w.seen, next.FilesTotal)
 		next.UpdatedAt = time.Now().UnixMilli()
 		w.report(next)
 	}
 
+	w.keep(line)
+}
+
+func (w *progressWriter) keep(line string) {
 	if w.kept == nil {
 		w.kept = make([]string, keptLines)
 	}

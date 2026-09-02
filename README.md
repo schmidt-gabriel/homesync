@@ -129,15 +129,21 @@ the previous snapshot, so unchanged files become hard links: every folder reads
 as a complete copy you can browse or restore from with `cp`, while only what
 changed since yesterday takes new space.
 
-The two paths are shown on that page but cannot be edited there, and neither
-can the marker. They are where the container's volumes are, and no amount of
+The two paths are shown on that page — as the host knows them, when the
+container has been told through `BACKUP_SOURCE_HOST` and `BACKUP_DIR_HOST`,
+since `/backup-source` is a name that exists only inside it — but cannot be
+edited there, and neither can the marker. They are where the container's volumes are, and no amount of
 saving moves a mount — a path that could be typed in could be pointed at
 somewhere nothing is mounted, which is a backup of nothing that looks like a
 backup of something. To change what is copied, change the mount. What the page
 does own is the policy: whether the job runs, when, and how much it keeps.
 
-While a run is going the page shows how far it has got: a bar over rsync's
-count of files handled, with both counts beside it. Not a percentage of bytes —
+While a run is going the page shows how far it has got: a bar of files checked
+against files found, with both counts beside it, and a Stop button. Stopping
+deletes the partly-written snapshot — an incomplete one sitting beside the
+finished ones would restore as though it were a backup — and leaves every
+earlier snapshot alone. The list of past runs can be cleared, which removes
+that record and nothing else. Not a percentage of bytes —
 rsync measures that against an estimate, and with `--link-dest` most files are
 skipped instantly, so it reads 99% in the first seconds of a run with hours
 left. The file list is also built as the run goes, so the total climbs early
