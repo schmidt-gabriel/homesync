@@ -118,6 +118,10 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("GET /admin/api/ignore", s.requireAdmin(s.handleGetIgnore))
 	s.mux.HandleFunc("PUT /admin/api/ignore", s.requireAdmin(s.handlePutIgnore))
 
+	s.mux.HandleFunc("GET /admin/api/backup", s.requireAdmin(s.handleAdminBackupStatus))
+	s.mux.HandleFunc("PUT /admin/api/backup/config", s.requireAdmin(s.handleAdminBackupConfig))
+	s.mux.HandleFunc("POST /admin/api/backup/run", s.requireAdmin(s.handleAdminBackupRun))
+
 	ui, err := fs.Sub(uiFiles, "ui")
 	if err != nil {
 		panic("embedded ui missing: " + err.Error())

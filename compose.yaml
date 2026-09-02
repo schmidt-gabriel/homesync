@@ -14,6 +14,10 @@ services:
     volumes:
       - ${HOMESYNC_DATA:-./data}:/data
       - ${HOMESYNC_CONFIG:-./config}:/config
+      # Where dated snapshots go once backups are switched on. In a real
+      # install this is a separate disk — the whole point is that it survives
+      # the one the data is on — so point HOMESYNC_BACKUP at its mountpoint.
+      - ${HOMESYNC_BACKUP:-./backup}:/backup
     environment:
       - TZ=${TZ:-America/Sao_Paulo}
       - LOG_LEVEL=${LOG_LEVEL:-info}
@@ -30,6 +34,16 @@ services:
       # Serves the admin UI with no login at all. Everything it can do is then
       # open to anyone who can reach the port.
       - ADMIN_NO_AUTH=${ADMIN_NO_AUTH:-}
+      # Backups. These only seed the first start; after that the admin UI owns
+      # the configuration and editing them here changes nothing.
+      - BACKUP_ENABLED=${BACKUP_ENABLED:-false}
+      - BACKUP_SOURCE=${BACKUP_SOURCE:-/data}
+      - BACKUP_DIR=${BACKUP_DIR:-/backup}
+      - "BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 3 * * *}"
+      - BACKUP_MARKER=${BACKUP_MARKER:-.homesync_backup_disk}
+      - BACKUP_DAILY=${BACKUP_DAILY:-7}
+      - BACKUP_WEEKLY=${BACKUP_WEEKLY:-4}
+      - BACKUP_MONTHLY=${BACKUP_MONTHLY:-6}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
