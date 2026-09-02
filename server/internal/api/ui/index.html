@@ -986,10 +986,26 @@ function renderProgress(data) {
   }
 
   bar.hidden = false;
+
+  // Nothing at all yet: rsync has not spoken, which on a large tree is a real
+  // phase and not a fault.
   if (!progress) {
     bar.classList.add("unknown");
     fill.style.width = "";
-    $("progress-text").textContent = `Building the file list · ${elapsed}`;
+    $("progress-text").textContent = `Scanning · ${elapsed}`;
+    return;
+  }
+
+  // Files seen but nothing transferred. This is the ordinary shape of a run
+  // where --link-dest matched everything: there is no fraction to draw,
+  // because there is no transfer to be a fraction of. Showing the count is
+  // what separates a scan of a million files from a hung process — it used to
+  // sit on "building the file list" for the whole pass and look identical.
+  if (!progress.files_total) {
+    bar.classList.add("unknown");
+    fill.style.width = "";
+    $("progress-text").textContent =
+      `${progress.seen.toLocaleString()} files checked, nothing to copy so far · ${elapsed}`;
     return;
   }
 
@@ -1000,10 +1016,21 @@ function renderProgress(data) {
   // goes, so the total climbs during the first seconds and the share can fall
   // — seeing the denominator move says "it found more work" instead of leaving
   // a bar that appears to run backwards for no reason.
+  // "so far" while rsync is still walking the tree: during incremental
+  // recursion the total is what it has found, not what there is, so it climbs
+  // and the share can fall. Saying which phase it is in makes that read as
+  // discovery rather than as a bar going backwards.
   const parts = [
-    `${progress.files_done.toLocaleString()} of ${progress.files_total.toLocaleString()} files`,
+    progress.scanning
+      ? `${progress.files_done.toLocaleString()} of ${progress.files_total.toLocaleString()} files found so far`
+      : `${progress.files_done.toLocaleString()} of ${progress.files_total.toLocaleString()} files copied`,
     formatBytes(progress.bytes),
   ];
+  // The scan runs ahead of the copying, so this is usually the larger number
+  // and answers "is it still finding things?" on its own.
+  if (progress.seen > progress.files_done) {
+    parts.push(`${progress.seen.toLocaleString()} checked`);
+  }
   if (elapsed) parts.push(elapsed);
   $("progress-text").textContent = parts.join(" · ");
 }
