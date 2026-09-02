@@ -1,6 +1,7 @@
 # Local runtime state
 /data/
 /config/
+/backup/
 .env
 
 # macOS

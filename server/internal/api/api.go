@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/schmidt-gabriel/homesync/server/internal/backup"
 	"github.com/schmidt-gabriel/homesync/server/internal/ignore"
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
 	"github.com/schmidt-gabriel/homesync/server/internal/store"
@@ -29,20 +30,27 @@ type Server struct {
 	// save writes are the same ones the volume is reconciled against.
 	ignore *ignore.Shared
 
+	// backups owns the snapshot schedule. The admin UI is the only thing that
+	// reads or writes it, but it is held here rather than in admin because the
+	// job runs whether or not anyone has enabled the management page.
+	backups *backup.Manager
+
 	// admin is nil unless EnableAdmin was called; the management routes are
 	// not registered at all on a server without an admin password.
 	admin *admin
 }
 
 // New builds the router and starts forwarding index changes to SSE clients.
-func New(ix *index.Index, st *store.Store, tr *trash.Trash, rules *ignore.Shared) *Server {
+func New(ix *index.Index, st *store.Store, tr *trash.Trash, rules *ignore.Shared,
+	backups *backup.Manager) *Server {
 	s := &Server{
-		index:  ix,
-		store:  st,
-		trash:  tr,
-		ignore: rules,
-		events: newBroadcaster(),
-		mux:    http.NewServeMux(),
+		index:   ix,
+		store:   st,
+		trash:   tr,
+		ignore:  rules,
+		backups: backups,
+		events:  newBroadcaster(),
+		mux:     http.NewServeMux(),
 	}
 	s.routes()
 

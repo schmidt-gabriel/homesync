@@ -63,8 +63,8 @@ recovered later; if you lose it, revoke the device and add it again.
 ### Admin UI
 
 Set `ADMIN_PASSWORD` and the server serves a management page at
-`http://localhost:8420/`: devices, a file browser, the trash, and the shared
-ignore rules. With no password set, none of those routes are registered at all.
+`http://localhost:8420/`: devices, a file browser, the trash, the shared
+ignore rules, and the backup schedule. With no password set, none of those routes are registered at all.
 
 ```bash
 ADMIN_USER=admin ADMIN_PASSWORD=something docker compose up -d
@@ -114,10 +114,67 @@ Both are safe to interrupt and safe to run twice. Modification times are
 carried across, so a converted tree does not look modified and no client
 re-downloads anything.
 
+### Backups
+
+Sync is not a backup. Every machine holding the same copy of a file means every
+machine holds the same mistake, and a deletion propagates in seconds — the
+trash buys back thirty days of that, and nothing buys back a disk that dies.
+So the server can also take dated snapshots of a directory onto another disk.
+
+Switch it on under **Backups** in the admin UI, which is also where the
+schedule, the paths and the retention live. Each run writes
+`BACKUP_DIR/YYYY-MM-DD` with `rsync --link-dest` pointed at the previous
+snapshot, so unchanged files become hard links: every folder reads as a
+complete copy you can browse or restore from with `cp`, while only what changed
+since yesterday takes new space.
+
+Old snapshots are thinned grandfather-father-son: the last 7 daily snapshots,
+the newest snapshot of each of the last 4 ISO weeks, and the newest of each of
+the last 6 months. Because the snapshots share inodes, deleting the ones in
+between never damages the ones that are kept. The tab shows which tiers are
+holding each snapshot, so what the next run will remove is visible before it
+removes it.
+
+Restoring is a copy, with no tool involved:
+
+```bash
+rsync -a /backup/2026-09-02/ /data/
+```
+
+#### The marker, and why it exists
+
+The backup destination is normally a separate disk. If that disk is **not
+mounted** when a run starts, a Docker bind mount silently resolves
+`/backup` to the empty directory underneath the mountpoint — on the root
+partition — and the backup fills the system disk instead.
+
+`mountpoint` does not catch this: a bind mount is always a mountpoint inside
+the container, whatever the host is doing. So a run instead requires a marker
+file that exists only on the real disk. Create it once, with the disk mounted:
+
+```bash
+touch /mnt/Storage/Backup/.homesync_backup_disk
+```
+
+Without it every run refuses before writing anything, and the admin page says
+so. As defence in depth, make Docker wait for the disk in `/etc/fstab` too:
+keep `nofail`, add `x-systemd.device-timeout=30`.
+
+#### Permissions
+
+The container runs unprivileged as uid 1000, which is enough to snapshot its
+own `/data`. Backing up a host directory owned by other users — `/home/app-data`
+and the like — needs more than that: rsync cannot read what the user cannot
+read, and `-a` cannot restore ownership it was not allowed to set. Give the
+container `user: "0:0"` in `compose.yaml` for that case, and understand what it
+trades away. A run that hits unreadable files fails with rsync's exit 23, and
+the history says so rather than reporting a snapshot that is quietly partial.
+
 ### Configuration
 
 Copy `.env.sample` to `.env`. Every value has a working default; see the sample
-for what each one does.
+for what each one does. The `BACKUP_*` values seed the first start only: after
+that the admin UI owns that configuration, and changing them has no effect.
 
 ## Installing the Mac client
 

@@ -84,6 +84,24 @@ CREATE TABLE IF NOT EXISTS devices (
     scope      TEXT NOT NULL DEFAULT ''
 );
 
+-- One row per backup attempt, successful or not. Owned by internal/backup;
+-- it lives here because the schema is applied in one place, and because the
+-- admin UI reads the history from the same database as everything else it
+-- shows. Bounded by the backup package on insert, not by the janitor.
+CREATE TABLE IF NOT EXISTS backup_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at  INTEGER NOT NULL,
+    finished_at INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL,
+    trigger     TEXT NOT NULL DEFAULT '',
+    snapshot    TEXT NOT NULL DEFAULT '',
+    error       TEXT NOT NULL DEFAULT '',
+    warning     TEXT NOT NULL DEFAULT '',
+    stats       TEXT NOT NULL DEFAULT '',
+    pruned      TEXT NOT NULL DEFAULT ''
+);
+
 INSERT OR IGNORE INTO meta(key, value) VALUES ('current_rev', '0');
 `
 

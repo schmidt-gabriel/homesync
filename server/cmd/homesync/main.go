@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/schmidt-gabriel/homesync/server/internal/api"
+	"github.com/schmidt-gabriel/homesync/server/internal/backup"
 	"github.com/schmidt-gabriel/homesync/server/internal/crypt"
 	"github.com/schmidt-gabriel/homesync/server/internal/ignore"
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
@@ -54,6 +55,23 @@ Environment:
   ADMIN_NO_AUTH     Serve the admin UI with no login at all
   LOG_LEVEL         debug|info|warn|error        (default info)
 
+Backups. These seed the configuration the first time the server starts; after
+that the admin UI owns it, and changing them has no effect.
+
+  BACKUP_ENABLED    Take dated snapshots         (default false)
+  BACKUP_SOURCE     Directory to snapshot        (default /data)
+  BACKUP_DIR        Where snapshots go           (default /backup)
+  BACKUP_SCHEDULE   Five-field cron expression   (default "0 3 * * *")
+  BACKUP_MARKER     File proving the disk is mounted (default .homesync_backup_disk)
+  BACKUP_DAILY      Daily snapshots to keep      (default 7)
+  BACKUP_WEEKLY     ISO weeks to keep one of     (default 4)
+  BACKUP_MONTHLY    Months to keep one of        (default 6)
+
+Each run writes BACKUP_DIR/YYYY-MM-DD with rsync --link-dest, so unchanged
+files are hard links to the previous snapshot and cost no space. The marker
+file is what stops a run when the backup disk is not mounted: a bind mount is
+always a mountpoint inside the container, so the mount itself proves nothing.
+
 Encryption applies to new writes. Turning it on leaves the files already on
 the volume as they are, readable either way; "homesync key encrypt" converts
 them. The server holds the key, so this protects a stolen disk or a copied
@@ -73,6 +91,7 @@ type config struct {
 	adminPassword  string
 	adminNoAuth    bool
 	encryptionKey  string
+	backup         backup.Config
 }
 
 func main() {
@@ -136,6 +155,24 @@ func loadConfig() config {
 		adminPassword:  os.Getenv("ADMIN_PASSWORD"),
 		adminNoAuth:    envBool("ADMIN_NO_AUTH", false),
 		encryptionKey:  os.Getenv("ENCRYPTION_KEY"),
+		backup:         backupConfig(),
+	}
+}
+
+// backupConfig is only ever the seed for a fresh database. Once the admin UI
+// has saved a configuration, that document wins — an environment variable that
+// silently overrode what the page shows would make the page a lie.
+func backupConfig() backup.Config {
+	defaults := backup.DefaultConfig()
+	return backup.Config{
+		Enabled:   envBool("BACKUP_ENABLED", defaults.Enabled),
+		SourceDir: env("BACKUP_SOURCE", defaults.SourceDir),
+		BackupDir: env("BACKUP_DIR", defaults.BackupDir),
+		Schedule:  env("BACKUP_SCHEDULE", defaults.Schedule),
+		Marker:    env("BACKUP_MARKER", defaults.Marker),
+		Daily:     envInt("BACKUP_DAILY", defaults.Daily),
+		Weekly:    envInt("BACKUP_WEEKLY", defaults.Weekly),
+		Monthly:   envInt("BACKUP_MONTHLY", defaults.Monthly),
 	}
 }
 
@@ -265,7 +302,20 @@ func serve(cfg config) error {
 
 	go runJanitor(ctx, ix, st, tr, rules, cfg)
 
-	handler := api.New(ix, st, tr, rules)
+	backups, err := backup.New(ctx, ix, cfg.backup)
+	if err != nil {
+		return err
+	}
+	// Started whatever the configuration says: a disabled job idles on its
+	// reload channel, so switching it on from the admin UI takes effect
+	// without a restart.
+	go backups.Run(ctx)
+	if active := backups.Config(); active.Enabled {
+		slog.Info("backups enabled", "schedule", active.Schedule,
+			"source", active.SourceDir, "dest", active.BackupDir)
+	}
+
+	handler := api.New(ix, st, tr, rules, backups)
 	switch {
 	case cfg.adminNoAuth:
 		handler.EnableAdmin(cfg.adminUser, "", true)

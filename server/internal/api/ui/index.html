@@ -104,6 +104,26 @@
   .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 6px; }
   .dot.off { background: var(--muted); }
   .dot.bad { background: var(--danger); }
+  .dot.warn { background: var(--warn); }
+  input[type=number] {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 11px; font-size: 14px; font-family: inherit; width: 100%;
+  }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .field label {
+    display: block; font-size: 12px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px;
+  }
+  .field .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .switch { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 14px; }
+  .switch input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+  /* Which retention tier is holding a snapshot on the disk. */
+  .tier {
+    display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .03em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 999px; margin-right: 4px;
+    background: var(--accent-soft); color: var(--accent); border: 1px solid var(--border);
+  }
+  .tier.none { background: none; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -151,6 +171,7 @@
       <button data-tab="devices" aria-selected="false">Devices</button>
       <button data-tab="files" aria-selected="false">Files</button>
       <button data-tab="trash" aria-selected="false">Trash</button>
+      <button data-tab="backups" aria-selected="false">Backups</button>
       <button data-tab="ignore" aria-selected="false">Ignore rules</button>
     </nav>
 
@@ -217,6 +238,106 @@
           <table>
             <thead><tr><th>Original path</th><th class="num">Size</th><th>Discarded</th><th></th></tr></thead>
             <tbody id="trash-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-backups" hidden>
+      <!-- The reason a run would refuse to start, said before 03:00 rather
+           than discovered in the history afterwards. -->
+      <div id="backup-problem" class="notice error" hidden></div>
+      <div id="backup-stale" class="notice warn" hidden></div>
+      <div id="backup-off" class="notice info" hidden>
+        Snapshots are switched off. Nothing is being copied anywhere.
+      </div>
+
+      <div class="cards" id="backup-cards"></div>
+
+      <div class="panel">
+        <div class="row" style="justify-content:space-between; align-items:baseline">
+          <h2 style="margin:0">Snapshots</h2>
+          <button class="action" id="run-backup">Run now</button>
+        </div>
+        <p class="muted" style="margin:8px 0 12px">
+          One dated folder per run, each a complete copy you can browse or restore from.
+          Unchanged files are hard links to the previous snapshot, so only what changed
+          takes new space. A snapshot no tier is holding is deleted by the next run.
+        </p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Snapshot</th><th>Kept by</th><th>Written</th></tr></thead>
+            <tbody id="snapshot-rows"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Schedule and retention</h2>
+        <form id="backup-form">
+          <label class="switch" style="margin-bottom:14px">
+            <input type="checkbox" id="backup-enabled">
+            <span>Take snapshots on a schedule</span>
+          </label>
+
+          <div class="fields">
+            <div class="field">
+              <label for="backup-schedule">Schedule</label>
+              <input type="text" id="backup-schedule" spellcheck="false" placeholder="0 3 * * *">
+              <div class="hint" id="schedule-hint">Five cron fields, in the server's timezone.</div>
+            </div>
+            <div class="field">
+              <label for="backup-source">Source directory</label>
+              <input type="text" id="backup-source" spellcheck="false">
+              <div class="hint">A path inside the container, so it has to be mounted there.</div>
+            </div>
+            <div class="field">
+              <label for="backup-dest">Backup directory</label>
+              <input type="text" id="backup-dest" spellcheck="false">
+              <div class="hint">The separate disk the snapshots are written to.</div>
+            </div>
+            <div class="field">
+              <label for="backup-marker">Disk marker</label>
+              <input type="text" id="backup-marker" spellcheck="false">
+              <div class="hint">A file that exists only on the real disk. No marker, no run.</div>
+            </div>
+            <div class="field">
+              <label for="backup-daily">Daily snapshots</label>
+              <input type="number" id="backup-daily" min="1" max="365">
+              <div class="hint">The most recent runs, kept in full.</div>
+            </div>
+            <div class="field">
+              <label for="backup-weekly">Weeks</label>
+              <input type="number" id="backup-weekly" min="0" max="520">
+              <div class="hint">The newest snapshot of each of the last N ISO weeks.</div>
+            </div>
+            <div class="field">
+              <label for="backup-monthly">Months</label>
+              <input type="number" id="backup-monthly" min="0" max="240">
+              <div class="hint">The newest snapshot of each of the last N months.</div>
+            </div>
+          </div>
+
+          <p class="muted" style="margin:14px 0 0">
+            Retention runs at the end of every backup, and a snapshot held by no tier is
+            removed then. Widening these keeps more history from now on; narrowing them
+            deletes snapshots on the next run, and that cannot be undone.
+          </p>
+          <div class="row" style="margin-top:10px">
+            <button class="action" type="submit">Save</button>
+            <span class="muted" id="backup-status"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Recent runs</h2>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Started</th><th>Result</th><th>Snapshot</th><th class="num">Took</th><th class="num">Copied</th></tr>
+            </thead>
+            <tbody id="backup-runs"></tbody>
           </table>
         </div>
       </div>
@@ -659,6 +780,241 @@ $("save-ignore").addEventListener("click", async () => {
   if (purged > 0) {
     loadTrash();
     loadOverview();
+  }
+});
+
+// ── Backups ──────────────────────────────────────────────────────────────────
+
+function formatDuration(ms) {
+  if (!ms || ms < 1000) return "<1s";
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+// Times in the future, which formatTime does not cover: it measures how long
+// ago something was, and every number it produces would come out negative.
+function formatSoon(ms) {
+  if (!ms) return "—";
+  const diff = ms - Date.now();
+  if (diff <= 0) return "any moment";
+  if (diff < 3_600_000) return `in ${Math.max(1, Math.round(diff / 60_000))} min`;
+  if (diff < 86_400_000) return `in ${Math.round(diff / 3_600_000)} h`;
+  return new Date(ms).toLocaleString();
+}
+
+let backupPoll = null;
+
+// Set as soon as anyone types in the configuration form. The tab reloads
+// itself every few seconds while a backup runs, and refilling the inputs from
+// the server underneath someone mid-edit would throw away what they typed.
+let formTouched = false;
+
+async function loadBackups() {
+  const data = await api("/admin/api/backup");
+  renderBackups(data);
+
+  // While rsync is going the page is the only place anyone can see it, so it
+  // keeps itself current — and stops as soon as the run ends or the tab does.
+  clearTimeout(backupPoll);
+  if (data.running && activeTab === "backups") {
+    backupPoll = setTimeout(() => loadBackups().catch(() => {}), 3000);
+  }
+}
+loaders.backups = loadBackups;
+
+function renderBackups(data) {
+  const config = data.config;
+  const metrics = data.metrics;
+
+  $("backup-off").hidden = config.enabled;
+  $("backup-problem").hidden = !data.problem;
+  if (data.problem) $("backup-problem").textContent = data.problem;
+
+  // No invented staleness threshold: a schedule can be daily or monthly, and
+  // the two facts worth raising are "the last one failed" and "none has ever
+  // run", both of which are unambiguous.
+  const stale = $("backup-stale");
+  const last = metrics.last_run;
+  if (last && last.status === "failed") {
+    stale.textContent = `The last backup failed ${formatTime(last.finished_at)}: ${last.error}`;
+    stale.hidden = false;
+  } else if (config.enabled && metrics.runs === 0) {
+    stale.textContent = "No backup has run yet. Use Run now to check the setup before the schedule does.";
+    stale.hidden = false;
+  } else {
+    stale.hidden = true;
+  }
+
+  const disk = data.health.disk;
+  const cards = [
+    ["Last backup", metrics.last_success ? formatTime(metrics.last_success.finished_at) : "never"],
+    ["Next run", data.running ? "running now" : (config.enabled ? formatSoon(data.next_run) : "off")],
+    ["Snapshots", String(data.snapshots.length)],
+    ["Disk free", disk ? formatBytes(disk.free) : "—"],
+    ["Successes in a row", String(metrics.streak)],
+  ];
+  const cardHost = $("backup-cards");
+  cardHost.replaceChildren();
+  for (const [label, value] of cards) {
+    const div = document.createElement("div");
+    div.className = "card";
+    const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+    const v = document.createElement("div"); v.className = "value"; v.textContent = value;
+    div.append(l, v);
+    cardHost.append(div);
+  }
+
+  const run = $("run-backup");
+  run.disabled = data.running;
+  run.textContent = data.running ? "Running…" : "Run now";
+
+  if (!formTouched) fillBackupForm(config);
+
+  renderSnapshots(data.snapshots);
+  renderRuns(data.history);
+}
+
+function renderSnapshots(snapshots) {
+  const host = $("snapshot-rows");
+  host.replaceChildren();
+
+  if (snapshots.length === 0) {
+    const tr = document.createElement("tr");
+    const td = cell("No snapshots on the backup disk yet.", "empty");
+    td.colSpan = 3;
+    tr.append(td);
+    host.append(tr);
+    return;
+  }
+
+  for (const snapshot of snapshots) {
+    const tr = document.createElement("tr");
+    const tiers = document.createElement("td");
+    if (snapshot.tiers?.length) {
+      for (const tier of snapshot.tiers) {
+        const badge = document.createElement("span");
+        badge.className = "tier";
+        badge.textContent = tier;
+        tiers.append(badge);
+      }
+    } else {
+      const badge = document.createElement("span");
+      badge.className = "tier none";
+      badge.textContent = "removed by the next run";
+      tiers.append(badge);
+    }
+    tr.append(cell(snapshot.name, "path"), tiers, cell(formatTime(snapshot.mtime)));
+    host.append(tr);
+  }
+}
+
+function renderRuns(history) {
+  const host = $("backup-runs");
+  host.replaceChildren();
+
+  if (history.length === 0) {
+    const tr = document.createElement("tr");
+    const td = cell("Nothing has run yet.", "empty");
+    td.colSpan = 5;
+    tr.append(td);
+    host.append(tr);
+    return;
+  }
+
+  for (const run of history.slice(0, 30)) {
+    const tr = document.createElement("tr");
+
+    const result = document.createElement("td");
+    const dot = document.createElement("span");
+    dot.className = "dot" + (run.status === "success"
+      ? (run.warning ? " warn" : "")
+      : run.status === "failed" ? " bad" : " off");
+    result.append(dot);
+    const label = run.status === "success" && run.warning ? "success, with a note" : run.status;
+    result.append(document.createTextNode(`${label} · ${run.trigger}`));
+    // The reason is the whole value of a failed row; it goes under the status
+    // rather than into a tooltip nobody hovers.
+    const detail = run.error || run.warning;
+    if (detail) {
+      const note = document.createElement("div");
+      note.className = "muted";
+      note.textContent = detail;
+      result.append(note);
+    }
+    if (run.pruned?.length) {
+      const note = document.createElement("div");
+      note.className = "muted";
+      note.textContent = `pruned ${run.pruned.join(", ")}`;
+      result.append(note);
+    }
+
+    tr.append(
+      cell(formatTime(run.started_at)),
+      result,
+      cell(run.snapshot || "—", "path"),
+      cell(formatDuration(run.duration_ms), "num"),
+      cell(run.stats ? formatBytes(run.stats.transferred_size) : "—", "num"),
+    );
+    host.append(tr);
+  }
+}
+
+$("backup-form").addEventListener("input", () => { formTouched = true; });
+
+function fillBackupForm(config) {
+  $("backup-enabled").checked = config.enabled;
+  $("backup-schedule").value = config.schedule;
+  $("backup-source").value = config.source_dir;
+  $("backup-dest").value = config.backup_dir;
+  $("backup-marker").value = config.marker;
+  $("backup-daily").value = config.daily_retention;
+  $("backup-weekly").value = config.weekly_retention;
+  $("backup-monthly").value = config.monthly_retention;
+  formTouched = false;
+}
+
+$("backup-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const status = $("backup-status");
+  status.textContent = "";
+
+  const body = {
+    enabled: $("backup-enabled").checked,
+    schedule: $("backup-schedule").value.trim(),
+    source_dir: $("backup-source").value.trim(),
+    backup_dir: $("backup-dest").value.trim(),
+    marker: $("backup-marker").value.trim(),
+    daily_retention: Number($("backup-daily").value),
+    weekly_retention: Number($("backup-weekly").value),
+    monthly_retention: Number($("backup-monthly").value),
+  };
+
+  try {
+    const data = await api("/admin/api/backup/config", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+    formTouched = false;
+    renderBackups(data);
+    status.textContent = data.config.enabled
+      ? `saved — next run ${formatSoon(data.next_run)}`
+      : "saved — snapshots are off";
+  } catch (err) {
+    status.textContent = err.message;
+  }
+});
+
+$("run-backup").addEventListener("click", async () => {
+  if (!confirm("Start a backup now?\n\nIt runs in the background and can take a while on the first pass.")) return;
+  try {
+    await api("/admin/api/backup/run", { method: "POST" });
+    $("backup-status").textContent = "";
+    loadBackups();
+  } catch (err) {
+    alert(err.message);
   }
 });
 

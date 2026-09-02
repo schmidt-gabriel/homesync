@@ -24,7 +24,9 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata wget
+# rsync takes the backup snapshots: --link-dest is what makes each dated
+# folder a full copy that only stores what changed since the previous one.
+RUN apk add --no-cache ca-certificates tzdata wget rsync
 
 # Runs unprivileged. uid 1000 matches the default first user on most Linux
 # hosts, so bind-mounted files keep sane ownership.

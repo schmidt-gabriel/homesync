@@ -7,7 +7,7 @@ more than one machine reaches the same files; clients keep one number and ask
 ## Layout
 
 ```
-server/        Go: HTTP API, SQLite index, fsnotify, trash, embedded admin UI
+server/        Go: HTTP API, SQLite index, fsnotify, trash, backups, embedded admin UI
 clients/mac/   Swift: HomeSyncKit (the engine, no UI) + HomeSync.xcodeproj
 clients/cli/   Go: homesync-client daemon; Linux, macOS, the BSDs
 conformance/   Go: the executable contract, run against any client
@@ -51,7 +51,8 @@ the density of the file you are in.
 ## Commands
 
 ```bash
-# Server
+# Server. The backup tests drive the real rsync in a temp directory and skip
+# themselves without one, so a machine without rsync proves less than it looks.
 cd server && go vet ./... && go test -race ./...
 
 # Conformance, against a running local server
@@ -117,6 +118,30 @@ reading of it excludes it — its full name and its name inside each device scop
 two would undo each other forever. And clients must re-read the document every
 cycle: one that keeps its launch-time copy reads the purge as a mass deletion
 and trips the delete guard.
+
+**The backup marker is the only thing standing between a run and the root
+partition.** `internal/backup` snapshots a directory onto another disk with
+`rsync --link-dest`. The destination is a bind mount, so it is *always* a
+mountpoint inside the container even when the host disk is not mounted — the
+bind then resolves to the empty directory underneath it and the backup fills
+the system disk. `mountpoint` cannot tell the difference. A marker file that
+exists only on the real disk can, so no marker means no run, checked before
+anything is written. This came from datakeeper, which was a separate repo and a
+separate container until the history had to be somewhere the admin UI could
+read it.
+
+Two more things there are load-bearing. Retention counts *distinct* weeks and
+months, not the newest N snapshots — count snapshots and a run of dailies fills
+the weekly quota from one week and everything older is deleted. And the
+`--link-dest` target is chosen as the newest snapshot older than today's,
+deliberately not the `latest` symlink: a second run on the same day would find
+`latest` already pointing at the directory being written and hard-link it
+against itself.
+
+**Backup configuration lives in the meta table, not the environment.** The
+`BACKUP_*` variables seed the first start; after that the admin UI owns the
+document, exactly like the ignore rules. An environment variable that kept
+overriding what the page shows would make the page a lie.
 
 **Encryption at rest is server-side.** The server holds the key, so it defends a
 stolen disk or a copied backup, not a compromised server. Sizes and hashes in
