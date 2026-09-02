@@ -139,12 +139,21 @@ backup of something. To change what is copied, change the mount. What the page
 does own is the policy: whether the job runs, when, and how much it keeps.
 
 While a run is going the page shows how far it has got: a bar of files checked
-against files found, with the files actually copied drawn solid over it, the
-counts beside it, and a Stop button. The two layers answer different questions,
-and on an incremental backup they diverge completely — a pass over 9,000 files
-where twelve had changed checked all 9,000 and copied twelve, which is why the
-bar is not drawn from the copied count alone: it would have read 0.13% for a
-run that was nearly done. Stopping
+against files found, the number actually copied beside it, and a Stop button.
+
+The bar is there to say how much is left, so it measures the walk rather than
+the copying. Those are very different on any backup after the first: a pass
+over 9,000 files where twelve had changed checks all 9,000 and copies twelve.
+The copied count is worth seeing, and it is printed, but a bar drawn from it
+would read 0% from the first second to the last of a run that was working
+perfectly.
+
+What it counts against is the previous run's total, because rsync cannot say
+how big the tree is until it has finished walking it — while it is still
+recursing it reports what it has found, and it finds more slowly than it
+checks, so its own total makes the bar read nearly full from the first second.
+The last run walked the same tree and counted it. On the first backup there is
+no such number and the bar follows rsync's growing total instead. Stopping
 deletes the partly-written snapshot — an incomplete one sitting beside the
 finished ones would restore as though it were a backup — and leaves every
 earlier snapshot alone. The list of past runs can be cleared, which removes

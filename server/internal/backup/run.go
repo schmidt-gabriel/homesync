@@ -151,8 +151,10 @@ func diskUsage(path string) *DiskUsage {
 // execute takes one snapshot and applies retention. It assumes nothing about
 // the caller beyond a validated config, and returns the Run to record whether
 // it succeeded or not.
+// expectedFiles is how many files the last successful run walked, or zero when
+// there has not been one. It is only ever an estimate for the progress bar.
 func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now time.Time,
-	report func(Progress)) Run {
+	expectedFiles int64, report func(Progress)) Run {
 	paths, cfg = paths.normalised(), cfg.normalised()
 	started := now
 	run := Run{
@@ -222,7 +224,7 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, "rsync", args...)
-	stdout := &progressWriter{report: report}
+	stdout := &progressWriter{report: report, expected: expectedFiles}
 	var stderr bytes.Buffer
 	cmd.Stdout = stdout
 	cmd.Stderr = &stderr

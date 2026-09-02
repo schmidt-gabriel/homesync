@@ -34,41 +34,48 @@ func TestParseProgress(t *testing.T) {
 	}
 }
 
-// The bar is checked against found, not rsync's transferred-file counter.
-// rsync prints a progress line only when it moves bytes, so a bar drawn from
-// that pair holds still for as long as a stretch of unchanged files takes —
-// which on an incremental backup is the whole run.
-func TestProgressPercentTracksFilesCheckedAgainstFilesFound(t *testing.T) {
+// The bar answers "how much is left", so it has to reach the end and it has to
+// move on the way there. Files checked against files found is the only pair
+// that does both.
+//
+// The two rejected candidates are asserted here as well, because each looked
+// right in isolation and neither survives an incremental run: the copied count
+// held at twelve for an entire measured pass over 9,000 files, and rsync's own
+// check counter only advances on a line it prints when it transfers something.
+func TestProgressPercentMeasuresWhatIsLeft(t *testing.T) {
 	var last Progress
 	w := &progressWriter{report: func(p Progress) { last = p }}
 
-	// One transfer, which is what tells us 200 files were found, and then a
-	// long run of unchanged ones that move no bytes at all.
-	fmt.Fprint(w, "  1,000  0%  1MB/s 0:00:01 (xfr#1, to-chk=199/200)\r")
-	if last.FilesTotal != 200 {
-		t.Fatalf("FilesTotal = %d, want 200", last.FilesTotal)
-	}
+	// 200 files found, 20 copied, 100 checked so far.
+	fmt.Fprint(w, " 20,000  10%  1MB/s 0:00:01 (xfr#20, to-chk=100/200)\r")
 	for i := range 100 {
 		fmt.Fprintf(w, "unchanged/file%03d.bin is uptodate\n", i)
 	}
 
-	if last.Seen != 100 {
-		t.Fatalf("Seen = %d, want 100", last.Seen)
-	}
 	if last.Percent != 50 {
 		t.Errorf("Percent = %d, want 50 (100 checked of 200 found)", last.Percent)
 	}
-	// And rsync's own transfer counter has not moved, which is exactly why it
-	// cannot be what the bar is drawn from.
-	if last.FilesDone != 1 {
-		t.Errorf("FilesDone = %d, want 1", last.FilesDone)
+	// Had the bar been drawn from either of these it would read 10% and stay
+	// there for the rest of the run.
+	if got := percentDone(last.FilesCopied, last.FilesTotal); got != 10 {
+		t.Fatalf("copied share = %d%%, expected the rejected 10%%", got)
+	}
+	if got := percentDone(last.FilesDone, last.FilesTotal); got != 50 {
+		t.Fatalf("rsync check share = %d%%", got)
+	}
+
+	// Checking more files moves the bar; copying none does not stall it.
+	for i := 100; i < 200; i++ {
+		fmt.Fprintf(w, "unchanged/file%03d.bin is uptodate\n", i)
+	}
+	if last.Percent != 100 {
+		t.Errorf("Percent = %d at the end of the file list, want 100", last.Percent)
+	}
+	if last.FilesCopied != 20 {
+		t.Errorf("FilesCopied = %d, want 20 — nothing else was copied", last.FilesCopied)
 	}
 }
 
-// The line rsync prints for most of a large run. Matching only to-chk left the
-// page saying "building the file list" while rsync was already copying, for as
-// long as the tree took to walk — which on the tree this was written for was
-// the majority of the run.
 func TestParseProgressReadsIncrementalRecursion(t *testing.T) {
 	line := "            3,000   0%    0.00kB/s    0:00:00 (xfr#1, ir-chk=1096/1159)"
 	got, ok := parseProgress(line)
@@ -251,5 +258,46 @@ func TestProgressWriterKeepsOnlyATail(t *testing.T) {
 	const smallEnough = 200
 	if lines := strings.Count(w.output(), "\n"); lines > smallEnough {
 		t.Fatalf("kept %d lines out of 5000, want at most %d", lines, smallEnough)
+	}
+}
+
+// The denominator comes from the last run when rsync's own is still catching
+// up. Measured on a 9,000-file tree, checked ran ahead of found for the whole
+// incremental pass and the share sat between 87% and 100% from the first
+// second — a bar that says "nearly done" before anything has happened tells
+// nobody how much is left.
+func TestProgressUsesThePreviousRunAsTheDenominator(t *testing.T) {
+	var last Progress
+	w := &progressWriter{expected: 9000, report: func(p Progress) { last = p }}
+
+	// rsync has discovered 2,000 so far and already checked 2,100 of them.
+	fmt.Fprint(w, " 1,000  0%  1MB/s 0:00:01 (xfr#3, ir-chk=100/2000)\r")
+	for range 2100 {
+		fmt.Fprint(w, "some/file.bin is uptodate\n")
+	}
+
+	if last.Percent != 23 {
+		t.Errorf("Percent = %d, want 23 (2,100 checked of the 9,000 last seen)", last.Percent)
+	}
+	// Against rsync's live total this would already be full.
+	if got := percentDone(last.Seen, last.FilesTotal); got != 100 {
+		t.Fatalf("the live total gives %d%%, expected the rejected 100%%", got)
+	}
+}
+
+// A tree that has grown since the last run must not finish the bar early and
+// leave it full while rsync is still working.
+func TestProgressDenominatorFollowsATreeThatGrew(t *testing.T) {
+	var last Progress
+	w := &progressWriter{expected: 100, report: func(p Progress) { last = p }}
+
+	fmt.Fprint(w, " 1,000  0%  1MB/s 0:00:01 (xfr#1, to-chk=100/400)\r")
+	for range 200 {
+		fmt.Fprint(w, "some/file.bin is uptodate\n")
+	}
+
+	// 200 checked of the 400 rsync now reports, not of the 100 last time.
+	if last.Percent != 50 {
+		t.Errorf("Percent = %d, want 50 — the live total is larger and wins", last.Percent)
 	}
 }
