@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,34 @@ func TestParseProgress(t *testing.T) {
 	}
 	if got.Percent != 99 {
 		t.Errorf("Percent = %d, want 99", got.Percent)
+	}
+}
+
+// The line rsync prints for most of a large run. Matching only to-chk left the
+// page saying "building the file list" while rsync was already copying, for as
+// long as the tree took to walk — which on the tree this was written for was
+// the majority of the run.
+func TestParseProgressReadsIncrementalRecursion(t *testing.T) {
+	line := "            3,000   0%    0.00kB/s    0:00:00 (xfr#1, ir-chk=1096/1159)"
+	got, ok := parseProgress(line)
+	if !ok {
+		t.Fatalf("parseProgress did not recognise an ir-chk line: %q", line)
+	}
+	if got.FilesDone != 63 || got.FilesTotal != 1159 {
+		t.Errorf("files = %d/%d, want 63/1159", got.FilesDone, got.FilesTotal)
+	}
+	if !got.Scanning {
+		t.Error("an ir-chk line was not marked as still scanning")
+	}
+
+	// And the complete-list form must not be marked as scanning, or the page
+	// would never stop saying the total might grow.
+	done, ok := parseProgress("      7,920,000  99%  537.28MB/s    0:00:00 (xfr#198, to-chk=2/201)")
+	if !ok {
+		t.Fatal("parseProgress stopped recognising to-chk")
+	}
+	if done.Scanning {
+		t.Error("a to-chk line was marked as still scanning")
 	}
 }
 
@@ -81,11 +110,26 @@ func TestProgressWriterSplitsOnCarriageReturns(t *testing.T) {
 		}
 	}
 
-	if len(seen) != 3 {
-		t.Fatalf("saw %d progress updates, want 3", len(seen))
+	// Distinct states, not update count: every line reports, and the ones that
+	// are not progress carry the last transfer figures forward on purpose so
+	// the bar holds its position instead of dropping to zero between files.
+	states := map[string]bool{}
+	for _, p := range seen {
+		if p.FilesTotal > 0 {
+			states[fmt.Sprintf("%d/%d %d", p.FilesDone, p.FilesTotal, p.Bytes)] = true
+		}
+	}
+	want := []string{"1/10 20000", "5/10 100000", "10/10 200000"}
+	if len(states) != len(want) {
+		t.Fatalf("saw %d distinct transfer states %v, want %v", len(states), states, want)
+	}
+	for _, state := range want {
+		if !states[state] {
+			t.Errorf("missing transfer state %q", state)
+		}
 	}
 	if last := seen[len(seen)-1]; last.FilesDone != 10 || last.Percent != 100 {
-		t.Errorf("last update = %d/%d (%d%%), want 10/10 (100%%)",
+		t.Errorf("last transfer state = %d/%d (%d%%), want 10/10 (100%%)",
 			last.FilesDone, last.FilesTotal, last.Percent)
 	}
 
@@ -98,5 +142,62 @@ func TestProgressWriterSplitsOnCarriageReturns(t *testing.T) {
 	stats := parseStats(out)
 	if stats.FilesTotal != 10 || stats.TransferredSize != 200000 {
 		t.Errorf("stats parsed from the kept output = %+v", stats)
+	}
+}
+
+// The run that has no progress to report at all: --link-dest matched every
+// file, so rsync transfers nothing and prints no progress line. Without the
+// name lines being counted, the page would sit on "building the file list" for
+// the entire pass and look identical to a hung process.
+func TestProgressWriterCountsUnchangedFiles(t *testing.T) {
+	var last Progress
+	updates := 0
+	w := &progressWriter{report: func(p Progress) { last = p; updates++ }}
+
+	var stream strings.Builder
+	stream.WriteString("created directory /backup/2026-01-02\n")
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&stream, "photos/img%04d.jpg is uptodate\n", i)
+	}
+	stream.WriteString("Number of files: 2,001 (reg: 2,000, dir: 1)\n")
+	stream.WriteString("Total transferred file size: 0 bytes\n")
+
+	if _, err := w.Write([]byte(stream.String())); err != nil {
+		t.Fatal(err)
+	}
+
+	if updates == 0 {
+		t.Fatal("a run of unchanged files reported nothing at all")
+	}
+	// 2000 files, the "created directory" line and the two stats lines.
+	if last.Seen != 2003 {
+		t.Errorf("Seen = %d, want 2003", last.Seen)
+	}
+	if last.Percent != 0 || last.FilesTotal != 0 {
+		t.Errorf("a run with no transfers reported a fraction: %+v", last)
+	}
+
+	// And the stats block still has to be readable, from a tail that cannot
+	// have held two thousand file names.
+	stats := parseStats(w.output())
+	if stats.FilesTotal != 2001 {
+		t.Errorf("stats from the kept tail = %+v", stats)
+	}
+}
+
+// The tail is bounded, or a tree with a million files is held in memory to
+// find fifteen lines at the end of it.
+func TestProgressWriterKeepsOnlyATail(t *testing.T) {
+	w := &progressWriter{}
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(w, "some/quite/long/path/to/a/file-%06d.bin is uptodate\n", i)
+	}
+	// An absolute bound, deliberately not keptLines: comparing against the
+	// constant makes the assertion move with it, so raising the constant to
+	// hold the whole stream would still pass. The point is that the tail stays
+	// small however much rsync prints.
+	const smallEnough = 200
+	if lines := strings.Count(w.output(), "\n"); lines > smallEnough {
+		t.Fatalf("kept %d lines out of 5000, want at most %d", lines, smallEnough)
 	}
 }

@@ -191,7 +191,13 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 	// them: openrsync, which is what macOS ships, fails the run outright on an
 	// option it does not know.
 	if report != nil && progressSupport() {
-		args = append(args, "--info=progress2", "--outbuf=L")
+		// name2 as well as progress2, because progress2 only speaks when bytes
+		// move. A run whose --link-dest matches everything transfers nothing
+		// and prints a single line for the whole pass, so a page watching only
+		// progress2 cannot tell a scan of a million files from a hung process.
+		// name2 mentions unchanged files too, one line each, which is the
+		// heartbeat. The lines are counted and dropped, never buffered.
+		args = append(args, "--info=progress2,name2", "--outbuf=L")
 	}
 	// The newest snapshot that is not the one being written. Deliberately not
 	// the "latest" symlink: a second run on the same day would find it already

@@ -2,10 +2,12 @@ package backup
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -307,5 +309,67 @@ rsync error: errors selecting input/output files, dirs (code 3) at main.c(768) [
 	}
 	if got := cause("   \n\n"); got != "" {
 		t.Errorf("empty stderr came back as %q", got)
+	}
+}
+
+// The end of the reported bug: on a wide tree rsync recurses incrementally and
+// reports ir-chk for most of the run, and a parser that only knew to-chk left
+// the page saying "building the file list" while files were already being
+// copied. Driving the real rsync through the real code path is the only way to
+// see that phase — it depends on the shape of the tree, not on timing.
+func TestExecuteReportsProgressWhileStillScanning(t *testing.T) {
+	if !progressSupport() {
+		t.Skip("this rsync cannot report progress (openrsync)")
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	dest := filepath.Join(dir, "backup")
+	mustMkdir(t, dest)
+	mustWrite(t, filepath.Join(dest, ".homesync_backup_disk"), "")
+
+	// Wide and deep enough that rsync has not finished walking it before it
+	// starts transferring. A flat directory is listed in one go and reports
+	// to-chk from the first line, which is why this went unnoticed.
+	for d := range 40 {
+		sub := filepath.Join(source, fmt.Sprintf("dir%02d", d), "sub")
+		mustMkdir(t, sub)
+		for f := range 30 {
+			mustWrite(t, filepath.Join(sub, fmt.Sprintf("f%02d.bin", f)), strings.Repeat("x", 2048))
+		}
+	}
+
+	var mu sync.Mutex
+	var scanning, copying, maxSeen int
+	report := func(p Progress) {
+		mu.Lock()
+		defer mu.Unlock()
+		if p.FilesTotal > 0 {
+			if p.Scanning {
+				scanning++
+			} else {
+				copying++
+			}
+		}
+		if int(p.Seen) > maxSeen {
+			maxSeen = int(p.Seen)
+		}
+	}
+
+	run := execute(context.Background(), Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"},
+		DefaultConfig(), TriggerManual, time.Now(), report)
+	if run.Status != StatusSuccess {
+		t.Fatalf("run failed: %s", run.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if scanning == 0 {
+		t.Errorf("no progress was reported while rsync was still walking the tree; "+
+			"the page shows nothing for that whole phase (copying updates: %d)", copying)
+	}
+	// And the heartbeat has to move too, for the runs that transfer nothing.
+	if maxSeen == 0 {
+		t.Error("no files were reported as seen")
 	}
 }
