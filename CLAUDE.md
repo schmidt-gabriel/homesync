@@ -138,10 +138,20 @@ deliberately not the `latest` symlink: a second run on the same day would find
 `latest` already pointing at the directory being written and hard-link it
 against itself.
 
-**Backup configuration lives in the meta table, not the environment.** The
-`BACKUP_*` variables seed the first start; after that the admin UI owns the
-document, exactly like the ignore rules. An environment variable that kept
-overriding what the page shows would make the page a lie.
+**Backup settings are split by who owns them, and the split is the design.**
+`Paths` — source, destination, marker — come from the environment, are read on
+every start and are shown on the admin page without being editable there: they
+are the container's mounts, and the server cannot move a mount. `Config` —
+enabled, schedule, retention — is policy, lives in the meta table like the
+ignore rules, and the page owns it from its first save onwards. The API refuses
+a request that tries to set a path rather than ignoring it, because answering
+200 to a change that did not happen is worse than refusing.
+
+The default paths are `/backup-source` and `/backup`, and `/backup-source`
+starts with `/backup`. The containment check must compare against
+`dir + separator`; without it the out-of-the-box setup is rejected as "the
+source is inside the backup directory". There is a test that fails exactly that
+way.
 
 **Encryption at rest is server-side.** The server holds the key, so it defends a
 stolen disk or a copied backup, not a compromised server. Sizes and hashes in

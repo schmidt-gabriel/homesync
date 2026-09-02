@@ -121,12 +121,20 @@ machine holds the same mistake, and a deletion propagates in seconds — the
 trash buys back thirty days of that, and nothing buys back a disk that dies.
 So the server can also take dated snapshots of a directory onto another disk.
 
-Switch it on under **Backups** in the admin UI, which is also where the
-schedule, the paths and the retention live. Each run writes
-`BACKUP_DIR/YYYY-MM-DD` with `rsync --link-dest` pointed at the previous
-snapshot, so unchanged files become hard links: every folder reads as a
-complete copy you can browse or restore from with `cp`, while only what changed
-since yesterday takes new space.
+Mount what should be copied at `/backup-source` and the disk it goes to at
+`/backup`, and there is nothing else to configure. Switch it on under
+**Backups** in the admin UI, which is also where the schedule and the retention
+live. Each run writes `/backup/YYYY-MM-DD` with `rsync --link-dest` pointed at
+the previous snapshot, so unchanged files become hard links: every folder reads
+as a complete copy you can browse or restore from with `cp`, while only what
+changed since yesterday takes new space.
+
+The two paths are shown on that page but cannot be edited there, and neither
+can the marker. They are where the container's volumes are, and no amount of
+saving moves a mount — a path that could be typed in could be pointed at
+somewhere nothing is mounted, which is a backup of nothing that looks like a
+backup of something. To change what is copied, change the mount. What the page
+does own is the policy: whether the job runs, when, and how much it keeps.
 
 Old snapshots are thinned grandfather-father-son: the last 7 daily snapshots,
 the newest snapshot of each of the last 4 ISO weeks, and the newest of each of
@@ -138,7 +146,7 @@ removes it.
 Restoring is a copy, with no tool involved:
 
 ```bash
-rsync -a /backup/2026-09-02/ /data/
+rsync -a /backup/2026-09-02/ /backup-source/
 ```
 
 #### The marker, and why it exists
@@ -173,8 +181,13 @@ the history says so rather than reporting a snapshot that is quietly partial.
 ### Configuration
 
 Copy `.env.sample` to `.env`. Every value has a working default; see the sample
-for what each one does. The `BACKUP_*` values seed the first start only: after
-that the admin UI owns that configuration, and changing them has no effect.
+for what each one does.
+
+The `BACKUP_*` values divide the way the page does. `BACKUP_SOURCE`,
+`BACKUP_DIR` and `BACKUP_MARKER` say where things are and are read on every
+start, because moving a mount has to move the path with it. The rest —
+`BACKUP_ENABLED`, `BACKUP_SCHEDULE` and the retention counts — seed the first
+start only: from the first save on the admin page onwards it owns them.
 
 ## Installing the Mac client
 

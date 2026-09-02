@@ -273,6 +273,17 @@
       </div>
 
       <div class="panel">
+        <h2>Where it copies from and to</h2>
+        <p class="muted" style="margin-top:0">
+          Set by the container's volumes, so there is nothing to edit here: moving a backup
+          means changing the mount, not this page. A path that could be typed in could be
+          pointed somewhere nothing is mounted, which is a backup of nothing that looks like
+          a backup of something.
+        </p>
+        <table><tbody id="backup-paths"></tbody></table>
+      </div>
+
+      <div class="panel">
         <h2>Schedule and retention</h2>
         <form id="backup-form">
           <label class="switch" style="margin-bottom:14px">
@@ -285,21 +296,6 @@
               <label for="backup-schedule">Schedule</label>
               <input type="text" id="backup-schedule" spellcheck="false" placeholder="0 3 * * *">
               <div class="hint" id="schedule-hint">Five cron fields, in the server's timezone.</div>
-            </div>
-            <div class="field">
-              <label for="backup-source">Source directory</label>
-              <input type="text" id="backup-source" spellcheck="false">
-              <div class="hint">A path inside the container, so it has to be mounted there.</div>
-            </div>
-            <div class="field">
-              <label for="backup-dest">Backup directory</label>
-              <input type="text" id="backup-dest" spellcheck="false">
-              <div class="hint">The separate disk the snapshots are written to.</div>
-            </div>
-            <div class="field">
-              <label for="backup-marker">Disk marker</label>
-              <input type="text" id="backup-marker" spellcheck="false">
-              <div class="hint">A file that exists only on the real disk. No marker, no run.</div>
             </div>
             <div class="field">
               <label for="backup-daily">Daily snapshots</label>
@@ -877,8 +873,43 @@ function renderBackups(data) {
 
   if (!formTouched) fillBackupForm(config);
 
+  renderPaths(data.paths, data.health);
   renderSnapshots(data.snapshots);
   renderRuns(data.history);
+}
+
+// Shown as facts, not fields. Each one carries whether it is actually there,
+// because "the mount is missing" and "the path is wrong" look identical in a
+// list of paths and are fixed in completely different places.
+function renderPaths(paths, health) {
+  const rows = [
+    ["Copies from", paths.source_dir, health.source_exists,
+      health.source_exists ? "" : "nothing is mounted here"],
+    ["Writes to", paths.backup_dir, health.backup_dir_exists,
+      health.backup_dir_exists ? "" : "nothing is mounted here"],
+    ["Disk marker", paths.marker, health.marker_present,
+      health.marker_present ? "" : "missing, so every run refuses"],
+  ];
+
+  const host = $("backup-paths");
+  host.replaceChildren();
+  for (const [label, value, ok, note] of rows) {
+    const tr = document.createElement("tr");
+    const valueCell = document.createElement("td");
+    valueCell.className = "path";
+    const dot = document.createElement("span");
+    dot.className = "dot" + (ok ? "" : " bad");
+    valueCell.append(dot, document.createTextNode(value));
+    if (note) {
+      const hint = document.createElement("span");
+      hint.className = "muted";
+      hint.style.marginLeft = "8px";
+      hint.textContent = note;
+      valueCell.append(hint);
+    }
+    tr.append(cell(label), valueCell);
+    host.append(tr);
+  }
 }
 
 function renderSnapshots(snapshots) {
@@ -971,9 +1002,6 @@ $("backup-form").addEventListener("input", () => { formTouched = true; });
 function fillBackupForm(config) {
   $("backup-enabled").checked = config.enabled;
   $("backup-schedule").value = config.schedule;
-  $("backup-source").value = config.source_dir;
-  $("backup-dest").value = config.backup_dir;
-  $("backup-marker").value = config.marker;
   $("backup-daily").value = config.daily_retention;
   $("backup-weekly").value = config.weekly_retention;
   $("backup-monthly").value = config.monthly_retention;
@@ -988,9 +1016,6 @@ $("backup-form").addEventListener("submit", async (event) => {
   const body = {
     enabled: $("backup-enabled").checked,
     schedule: $("backup-schedule").value.trim(),
-    source_dir: $("backup-source").value.trim(),
-    backup_dir: $("backup-dest").value.trim(),
-    marker: $("backup-marker").value.trim(),
     daily_retention: Number($("backup-daily").value),
     weekly_retention: Number($("backup-weekly").value),
     monthly_retention: Number($("backup-monthly").value),
