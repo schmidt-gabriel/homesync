@@ -59,6 +59,19 @@ type Paths struct {
 	// directory underneath it — on the root partition, which a run would
 	// proceed to fill.
 	Marker string `json:"marker"`
+
+	// SourceOnHost and DestOnHost are the same two directories as the machine
+	// running the container knows them. Display only, and never used to read or
+	// write anything: the server has no access to them under those names.
+	//
+	// They have to be told, because a container genuinely cannot know. What it
+	// sees is /backup-source; that a bind mount put /home/app-data there is a
+	// fact which exists only outside it. Showing the inside name to someone
+	// looking for the folder on their own disk is showing them a path that is
+	// not on it. Empty falls back to the container path, which is the honest
+	// answer when nobody has said otherwise.
+	SourceOnHost string `json:"source_on_host,omitempty"`
+	DestOnHost   string `json:"backup_dir_on_host,omitempty"`
 }
 
 // DefaultPaths is the convention a container that mounts nothing else follows.

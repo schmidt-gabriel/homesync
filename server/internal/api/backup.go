@@ -78,6 +78,32 @@ func (s *Server) handleAdminBackupConfig(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, status)
 }
 
+// handleAdminBackupStop ends the run in flight. What rsync had written is
+// removed with it: a half-copied snapshot left on the disk would appear in the
+// list beside the complete ones and restore as though it were one.
+func (s *Server) handleAdminBackupStop(w http.ResponseWriter, r *http.Request) {
+	if !s.backups.Stop() {
+		writeError(w, http.StatusConflict, "not_running", "no backup is running")
+		return
+	}
+	// Accepted, not OK: rsync takes a moment to die and the run records itself
+	// afterwards.
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "stopping"})
+}
+
+// handleAdminBackupClearHistory empties the run log. Admin only and not
+// exposed to devices, in the same way as emptying the trash: it is the other
+// thing on this page that cannot be undone.
+func (s *Server) handleAdminBackupClearHistory(w http.ResponseWriter, r *http.Request) {
+	removed, err := s.backups.ClearHistory(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "cannot clear the run history")
+		return
+	}
+	slog.Info("backup run history cleared", "runs", removed)
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
 func (s *Server) handleAdminBackupRun(w http.ResponseWriter, r *http.Request) {
 	// Checked before starting so the page can say what is wrong, rather than
 	// the operator watching for a run that fails a second later. A run is

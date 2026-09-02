@@ -178,6 +178,15 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 	run.Snapshot = name
 	dest := filepath.Join(paths.Dest, name)
 
+	// Whether this run is the one creating the directory decides whether it may
+	// clean it up. A run stopped halfway leaves a partial copy that would sit
+	// in the list looking like a complete backup, so it is removed — but only
+	// if this run made it. A second run on the same day writes into a snapshot
+	// that already succeeded, and deleting that would throw away a good backup
+	// because someone cancelled a redundant re-run.
+	_, statErr := os.Lstat(dest)
+	createdHere := errors.Is(statErr, os.ErrNotExist)
+
 	snapshots, err := ListSnapshots(paths.Dest)
 	if err != nil {
 		return finish(StatusFailed, "cannot read the backup directory: "+err.Error())
@@ -227,8 +236,16 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 		switch {
 		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 			return finish(StatusFailed, fmt.Sprintf("rsync did not finish within %s", runTimeout))
-		case errors.Is(ctx.Err(), context.Canceled):
-			return finish(StatusFailed, "the server shut down mid-run")
+		case errors.Is(runCtx.Err(), context.Canceled):
+			// Stopped on purpose, by a person or by shutdown. Either way the
+			// snapshot is half-written and must not be left in the list looking
+			// finished.
+			if createdHere {
+				if err := os.RemoveAll(dest); err != nil {
+					run.Warning = "the partial snapshot could not be removed: " + err.Error()
+				}
+			}
+			return finish(StatusCancelled, "stopped before it finished")
 		case errors.As(err, &exit) && exit.ExitCode() == exitVanished:
 			// Not a failure: files disappeared underneath a live directory.
 			run.Warning = "some files vanished while being copied; the snapshot is complete apart from those"

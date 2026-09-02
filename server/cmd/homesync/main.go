@@ -63,6 +63,14 @@ amount of saving moves a mount.
   BACKUP_DIR        Where snapshots go           (default /backup)
   BACKUP_MARKER     File proving the disk is mounted (default .homesync_backup_disk)
 
+The two directories above are what the container sees. What the host calls them
+is something only the host knows, so the admin page shows these when they are
+set and falls back to the container path when they are not. Display only:
+nothing is read or written under these names.
+
+  BACKUP_SOURCE_HOST  The source as the host knows it, e.g. /home/app-data
+  BACKUP_DIR_HOST     The destination as the host knows it, e.g. /mnt/Storage/Backup
+
 Backups, what the job does. These seed the configuration the first time the
 server starts; from the first save on the admin page onwards it owns them, and
 changing these has no effect.
@@ -179,6 +187,10 @@ func backupPaths() backup.Paths {
 		Source: env("BACKUP_SOURCE", defaults.Source),
 		Dest:   env("BACKUP_DIR", defaults.Dest),
 		Marker: env("BACKUP_MARKER", defaults.Marker),
+		// Display only. The compose file knows the host paths because it wrote
+		// the mounts; nothing inside the container can work them out.
+		SourceOnHost: os.Getenv("BACKUP_SOURCE_HOST"),
+		DestOnHost:   os.Getenv("BACKUP_DIR_HOST"),
 	}
 }
 

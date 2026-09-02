@@ -21,8 +21,47 @@ func TestParseProgress(t *testing.T) {
 	if got.FilesDone != 199 || got.FilesTotal != 201 {
 		t.Errorf("files = %d/%d, want 199/201", got.FilesDone, got.FilesTotal)
 	}
-	if got.Percent != 99 {
-		t.Errorf("Percent = %d, want 99", got.Percent)
+	// xfr#198: the files actually transferred, which is neither the checked
+	// count nor the total and was not being read at all.
+	if got.FilesCopied != 198 {
+		t.Errorf("FilesCopied = %d, want 198", got.FilesCopied)
+	}
+
+	// Percent is not this function's to set: it is files checked against files
+	// found, and the checked count is kept by the writer across lines.
+	if got.Percent != 0 {
+		t.Errorf("parseProgress set Percent to %d; the writer owns it", got.Percent)
+	}
+}
+
+// The bar is checked against found, not rsync's transferred-file counter.
+// rsync prints a progress line only when it moves bytes, so a bar drawn from
+// that pair holds still for as long as a stretch of unchanged files takes —
+// which on an incremental backup is the whole run.
+func TestProgressPercentTracksFilesCheckedAgainstFilesFound(t *testing.T) {
+	var last Progress
+	w := &progressWriter{report: func(p Progress) { last = p }}
+
+	// One transfer, which is what tells us 200 files were found, and then a
+	// long run of unchanged ones that move no bytes at all.
+	fmt.Fprint(w, "  1,000  0%  1MB/s 0:00:01 (xfr#1, to-chk=199/200)\r")
+	if last.FilesTotal != 200 {
+		t.Fatalf("FilesTotal = %d, want 200", last.FilesTotal)
+	}
+	for i := range 100 {
+		fmt.Fprintf(w, "unchanged/file%03d.bin is uptodate\n", i)
+	}
+
+	if last.Seen != 100 {
+		t.Fatalf("Seen = %d, want 100", last.Seen)
+	}
+	if last.Percent != 50 {
+		t.Errorf("Percent = %d, want 50 (100 checked of 200 found)", last.Percent)
+	}
+	// And rsync's own transfer counter has not moved, which is exactly why it
+	// cannot be what the bar is drawn from.
+	if last.FilesDone != 1 {
+		t.Errorf("FilesDone = %d, want 1", last.FilesDone)
 	}
 }
 
@@ -38,6 +77,9 @@ func TestParseProgressReadsIncrementalRecursion(t *testing.T) {
 	}
 	if got.FilesDone != 63 || got.FilesTotal != 1159 {
 		t.Errorf("files = %d/%d, want 63/1159", got.FilesDone, got.FilesTotal)
+	}
+	if got.FilesCopied != 1 {
+		t.Errorf("FilesCopied = %d, want 1", got.FilesCopied)
 	}
 	if !got.Scanning {
 		t.Error("an ir-chk line was not marked as still scanning")
@@ -97,6 +139,7 @@ func TestProgressWriterSplitsOnCarriageReturns(t *testing.T) {
 	stream := "    20,000  10%  1.00MB/s 0:00:01 (xfr#1, to-chk=9/10)\r" +
 		"   100,000  50%  1.00MB/s 0:00:01 (xfr#5, to-chk=5/10)\r" +
 		"   200,000 100%  1.00MB/s 0:00:02 (xfr#10, to-chk=0/10)\r\n" +
+		"notes/one.txt\n" +
 		"Number of files: 10 (reg: 10)\n" +
 		"Total transferred file size: 200,000 bytes\n"
 
@@ -128,9 +171,15 @@ func TestProgressWriterSplitsOnCarriageReturns(t *testing.T) {
 			t.Errorf("missing transfer state %q", state)
 		}
 	}
-	if last := seen[len(seen)-1]; last.FilesDone != 10 || last.Percent != 100 {
-		t.Errorf("last transfer state = %d/%d (%d%%), want 10/10 (100%%)",
-			last.FilesDone, last.FilesTotal, last.Percent)
+	if last := seen[len(seen)-1]; last.FilesDone != 10 || last.FilesTotal != 10 {
+		t.Errorf("last transfer state = %d/%d, want 10/10", last.FilesDone, last.FilesTotal)
+	}
+
+	// One real name, and nothing else. The stream contains "\r\n", which ends
+	// a progress line and opens an empty one, and it ends with the --stats
+	// block — neither is a file, and the bar is drawn from this number.
+	if last := seen[len(seen)-1]; last.Seen != 1 {
+		t.Errorf("Seen = %d, want 1 — an empty line or a stats line was counted as a file", last.Seen)
 	}
 
 	// The stats block has to survive: it is what the run's numbers come from,
@@ -169,9 +218,12 @@ func TestProgressWriterCountsUnchangedFiles(t *testing.T) {
 	if updates == 0 {
 		t.Fatal("a run of unchanged files reported nothing at all")
 	}
-	// 2000 files, the "created directory" line and the two stats lines.
-	if last.Seen != 2003 {
-		t.Errorf("Seen = %d, want 2003", last.Seen)
+	// 2000 files and the "created directory" line. The --stats block that
+	// follows is a summary, not more files: counting it pushed the checked
+	// total past the found total in the final moment of a run, showing the two
+	// numbers disagreeing exactly when someone is watching hardest.
+	if last.Seen != 2001 {
+		t.Errorf("Seen = %d, want 2001", last.Seen)
 	}
 	if last.Percent != 0 || last.FilesTotal != 0 {
 		t.Errorf("a run with no transfers reported a fraction: %+v", last)
