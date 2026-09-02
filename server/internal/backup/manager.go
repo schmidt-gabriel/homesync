@@ -23,9 +23,13 @@ type Manager struct {
 	// them. Nothing takes the lock to read them.
 	paths Paths
 
-	mu        sync.Mutex
-	cfg       Config
-	running   bool
+	mu      sync.Mutex
+	cfg     Config
+	running bool
+	// progress is replaced wholesale on every rsync line and read by the
+	// status endpoint. nil between runs, so the page cannot show the last
+	// run's numbers as though something were happening.
+	progress  *Progress
 	runStart  time.Time
 	runReason string
 	baseCtx   context.Context
@@ -188,11 +192,12 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 	defer func() {
 		m.mu.Lock()
 		m.running = false
+		m.progress = nil
 		m.mu.Unlock()
 	}()
 
 	slog.Info("backup starting", "trigger", trigger, "source", m.paths.Source, "dest", m.paths.Dest)
-	run := execute(ctx, m.paths, cfg, trigger, time.Now())
+	run := execute(ctx, m.paths, cfg, trigger, time.Now(), m.setProgress)
 
 	if run.Status == StatusSuccess {
 		slog.Info("backup finished", "snapshot", run.Snapshot,
@@ -212,6 +217,14 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 	return run, nil
 }
 
+// setProgress is called once per file rsync handles, so it does the least it
+// can: take the lock, replace a pointer, release.
+func (m *Manager) setProgress(p Progress) {
+	m.mu.Lock()
+	m.progress = &p
+	m.mu.Unlock()
+}
+
 // Status is everything the admin page shows on the Backups tab.
 type Status struct {
 	Config Config `json:"config"`
@@ -225,11 +238,15 @@ type Status struct {
 	// RunningTrigger says whether the run in flight was scheduled or asked
 	// for, which is the difference between "it is 03:00" and "someone is
 	// waiting for this to finish".
-	RunningTrigger string     `json:"running_trigger,omitempty"`
-	NextRun        int64      `json:"next_run,omitempty"` // unix milliseconds
-	Snapshots      []Snapshot `json:"snapshots"`
-	History        []Run      `json:"history"`
-	Metrics        Metrics    `json:"metrics"`
+	RunningTrigger string `json:"running_trigger,omitempty"`
+	// Progress is present only while a run is in flight, and only once rsync
+	// has printed its first line — a run spends its first moments building a
+	// file list with nothing to report.
+	Progress  *Progress  `json:"progress,omitempty"`
+	NextRun   int64      `json:"next_run,omitempty"` // unix milliseconds
+	Snapshots []Snapshot `json:"snapshots"`
+	History   []Run      `json:"history"`
+	Metrics   Metrics    `json:"metrics"`
 }
 
 // Status gathers the current picture. It touches the disk, so it is a
@@ -237,6 +254,7 @@ type Status struct {
 func (m *Manager) Status(ctx context.Context) (Status, error) {
 	m.mu.Lock()
 	cfg, running, since, reason := m.cfg, m.running, m.runStart, m.runReason
+	progress := m.progress
 	m.mu.Unlock()
 
 	status := Status{
@@ -250,6 +268,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if running {
 		status.RunningAt = since.UnixMilli()
 		status.RunningTrigger = reason
+		status.Progress = progress
 	}
 
 	if cfg.Enabled {
