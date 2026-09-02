@@ -205,7 +205,14 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 	}()
 
 	slog.Info("backup starting", "trigger", trigger, "source", m.paths.Source, "dest", m.paths.Dest)
-	run := execute(runCtx, m.paths, cfg, trigger, time.Now(), m.setProgress)
+	// The last successful run's file count, which is what the progress bar is
+	// drawn against. A failure to read it costs an estimate, not a backup.
+	expected, err := lastRunFileCount(ctx, m.index.DB())
+	if err != nil {
+		slog.Warn("cannot read the previous run's file count", "err", err)
+	}
+
+	run := execute(runCtx, m.paths, cfg, trigger, time.Now(), expected, m.setProgress)
 
 	switch run.Status {
 	case StatusSuccess:

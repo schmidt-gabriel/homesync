@@ -138,6 +138,20 @@ deliberately not the `latest` symlink: a second run on the same day would find
 `latest` already pointing at the directory being written and hard-link it
 against itself.
 
+**The progress bar counts files checked against the previous run's total, and
+each half of that was arrived at by discarding something that looked right.**
+rsync offers three numbers on its progress line and none of them works alone.
+`xfr#` is files copied: on an incremental pass over 9,000 files with twelve
+changed it holds at twelve from first second to last, so a bar drawn from it
+never moves. The `to-chk` done count only advances on a line rsync prints when
+it transfers something, so it freezes through every stretch of unchanged files.
+And the `to-chk` total is not the tree — while rsync is still recursing it is
+what has been discovered, and discovery lags checking, so the share sits
+between 87% and 100% for the whole run. Counting name lines gives a numerator
+that always moves; the previous run's file count gives a denominator that is
+real. Both were measured, not reasoned about, and both have tests that assert
+the rejected alternatives still produce the wrong number.
+
 **Backup settings are split by who owns them, and the split is the design.**
 `Paths` — source, destination, marker — come from the environment, are read on
 every start and are shown on the admin page without being editable there: they

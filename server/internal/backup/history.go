@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"math"
 )
 
@@ -128,6 +129,30 @@ func listRuns(ctx context.Context, db *sql.DB, limit int) ([]Run, error) {
 		runs = append(runs, run)
 	}
 	return runs, rows.Err()
+}
+
+// lastRunFileCount is how many files the newest successful run walked, or zero
+// when there has not been one. Used only as the progress bar's denominator:
+// rsync cannot say how big the tree is until it has finished walking it, and
+// the last run walked the same tree.
+func lastRunFileCount(ctx context.Context, db *sql.DB) (int64, error) {
+	var raw string
+	err := db.QueryRowContext(ctx, `
+        SELECT stats FROM backup_runs
+        WHERE status = ? AND stats <> ''
+        ORDER BY id DESC LIMIT 1`, StatusSuccess).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	var stats Stats
+	if err := json.Unmarshal([]byte(raw), &stats); err != nil {
+		return 0, nil // a row we cannot read costs an estimate, nothing more
+	}
+	return stats.FilesTotal, nil
 }
 
 // clearRuns empties the history and reports how many rows went. The snapshots

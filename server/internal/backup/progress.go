@@ -34,13 +34,17 @@ type Progress struct {
 	Bytes int64 `json:"bytes"`
 
 	// Percent is Seen against FilesTotal: files checked out of files found.
-	// Deliberately not FilesDone against FilesTotal — rsync only prints a
-	// progress line when it transfers something, so that pair holds still
-	// between transfers and freezes the bar for as long as a stretch of
-	// unchanged files takes. Seen moves on every file.
 	//
-	// A convenience for the page, which shows the counts too: this number
-	// alone would hide that the denominator is what moved.
+	// The bar exists to say how much is left, and this is the only pair that
+	// can. FilesCopied against FilesTotal measures something real but answers a
+	// different question, and it does not move: a measured pass over 9,000
+	// files with twelve changed held at 12 copied from the first second to the
+	// last, so a bar drawn from it read 0% for the whole run. Seen went from 2
+	// to 9,063 over the same run and reached the total as it finished.
+	//
+	// FilesDone cannot do it either. rsync prints a progress line only when it
+	// transfers something, so that counter holds still through every stretch of
+	// unchanged files, which on an incremental backup is all of them.
 	Percent int `json:"percent"`
 
 	// Seen counts every file rsync has said anything about, transferred or
@@ -135,6 +139,18 @@ func parseProgress(line string) (Progress, bool) {
 // per file, and holding a million of them to find the dozen lines of --stats
 // at the end would cost more memory than the backup does.
 type progressWriter struct {
+	// expected is how many files the last successful run walked, and it is the
+	// denominator the bar uses.
+	//
+	// rsync's own total cannot do the job while it is still recursing: it
+	// reports what it has discovered, and it discovers more slowly than it
+	// checks. Measured on a 9,000-file tree, checked was ahead of found for
+	// the whole pass and the share sat between 87% and 100% from the first
+	// second, which tells nobody how much is left. The previous run walked the
+	// same tree and counted it, so that number is a real estimate. Zero on a
+	// first run, and then the live total is all there is.
+	expected int64
+
 	// kept is a ring of the most recent lines, not everything: --info=name2
 	// prints one line per file, and a tree with a million of them would
 	// otherwise be held in memory to find the dozen lines of --stats at the
@@ -183,7 +199,7 @@ func (w *progressWriter) Write(p []byte) (int, error) {
 func (w *progressWriter) consume(line string) {
 	if progress, ok := parseProgress(line); ok {
 		progress.Seen = w.seen
-		progress.Percent = percentDone(w.seen, progress.FilesTotal)
+		progress.Percent = percentDone(w.seen, w.denominator(progress.FilesTotal))
 		w.last = progress
 		if w.report != nil {
 			w.report(progress)
@@ -220,12 +236,23 @@ func (w *progressWriter) consume(line string) {
 		// long stretch of unchanged ones.
 		next := w.last
 		next.Seen = w.seen
-		next.Percent = percentDone(w.seen, next.FilesTotal)
+		next.Percent = percentDone(w.seen, w.denominator(next.FilesTotal))
 		next.UpdatedAt = time.Now().UnixMilli()
 		w.report(next)
 	}
 
 	w.keep(line)
+}
+
+// denominator is what the bar is drawn against: the last run's count, or the
+// live one where that is larger. Taking the larger of the two keeps the bar
+// honest when the tree has grown since yesterday — it would otherwise reach
+// the end and stay there while rsync went on working.
+func (w *progressWriter) denominator(found int64) int64 {
+	if w.expected > found {
+		return w.expected
+	}
+	return found
 }
 
 func (w *progressWriter) keep(line string) {

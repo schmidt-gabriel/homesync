@@ -169,7 +169,7 @@ func TestExecuteTakesIncrementalSnapshots(t *testing.T) {
 	cfg := DefaultConfig()
 
 	day1 := time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC)
-	first := execute(context.Background(), paths, cfg, TriggerManual, day1, nil)
+	first := execute(context.Background(), paths, cfg, TriggerManual, day1, 0, nil)
 	if first.Status != StatusSuccess {
 		t.Fatalf("first run failed: %s", first.Error)
 	}
@@ -186,7 +186,7 @@ func TestExecuteTakesIncrementalSnapshots(t *testing.T) {
 	}
 
 	day2 := day1.AddDate(0, 0, 1)
-	second := execute(context.Background(), paths, cfg, TriggerSchedule, day2, nil)
+	second := execute(context.Background(), paths, cfg, TriggerSchedule, day2, 0, nil)
 	if second.Status != StatusSuccess {
 		t.Fatalf("second run failed: %s", second.Error)
 	}
@@ -239,7 +239,7 @@ func TestExecuteRefusesWithoutTheMarker(t *testing.T) {
 	paths := DefaultPaths()
 	paths.Source, paths.Dest = source, dest
 
-	run := execute(context.Background(), paths, DefaultConfig(), TriggerSchedule, time.Now(), nil)
+	run := execute(context.Background(), paths, DefaultConfig(), TriggerSchedule, time.Now(), 0, nil)
 	if run.Status != StatusFailed {
 		t.Fatalf("the run reported %q with no marker present", run.Status)
 	}
@@ -357,7 +357,7 @@ func TestExecuteReportsProgressWhileStillScanning(t *testing.T) {
 	}
 
 	run := execute(context.Background(), Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"},
-		DefaultConfig(), TriggerManual, time.Now(), report)
+		DefaultConfig(), TriggerManual, time.Now(), 0, report)
 	if run.Status != StatusSuccess {
 		t.Fatalf("run failed: %s", run.Error)
 	}
@@ -427,7 +427,7 @@ func TestExecuteStoppedMidRunRemovesThePartialSnapshot(t *testing.T) {
 		}
 	}()
 
-	run := execute(ctx, paths, DefaultConfig(), TriggerManual, day, nil)
+	run := execute(ctx, paths, DefaultConfig(), TriggerManual, day, 0, nil)
 
 	if run.Status != StatusCancelled {
 		t.Fatalf("a stopped run reported %q (%s)", run.Status, run.Error)
@@ -463,7 +463,7 @@ func TestExecuteStoppedRunKeepsAnExistingSnapshot(t *testing.T) {
 	cancel() // already stopped before rsync can do anything
 
 	run := execute(ctx, Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"},
-		DefaultConfig(), TriggerManual, day, nil)
+		DefaultConfig(), TriggerManual, day, 0, nil)
 	if run.Status != StatusCancelled {
 		t.Fatalf("reported %q (%s)", run.Status, run.Error)
 	}
@@ -521,7 +521,7 @@ func TestCheckedConvergesOnFilesFound(t *testing.T) {
 	var last Progress
 	run := execute(context.Background(),
 		Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"},
-		DefaultConfig(), TriggerManual, time.Now(), func(p Progress) {
+		DefaultConfig(), TriggerManual, time.Now(), 0, func(p Progress) {
 			mu.Lock()
 			last = p
 			mu.Unlock()
@@ -566,7 +566,7 @@ func TestIncrementalRunSeparatesCopiedFromChecked(t *testing.T) {
 
 	paths := Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"}
 	day := time.Date(2026, 3, 1, 3, 0, 0, 0, time.UTC)
-	if run := execute(context.Background(), paths, DefaultConfig(), TriggerManual, day, nil); run.Status != StatusSuccess {
+	if run := execute(context.Background(), paths, DefaultConfig(), TriggerManual, day, 0, nil); run.Status != StatusSuccess {
 		t.Fatalf("the first run failed: %s", run.Error)
 	}
 
@@ -579,7 +579,7 @@ func TestIncrementalRunSeparatesCopiedFromChecked(t *testing.T) {
 	var mu sync.Mutex
 	var last Progress
 	run := execute(context.Background(), paths, DefaultConfig(), TriggerManual,
-		day.AddDate(0, 0, 1), func(p Progress) {
+		day.AddDate(0, 0, 1), 0, func(p Progress) {
 			mu.Lock()
 			last = p
 			mu.Unlock()
