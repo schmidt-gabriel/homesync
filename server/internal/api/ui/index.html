@@ -124,6 +124,25 @@
     background: var(--accent-soft); color: var(--accent); border: 1px solid var(--border);
   }
   .tier.none { background: none; color: var(--muted); }
+  .bar {
+    height: 6px; border-radius: 999px; background: var(--border);
+    overflow: hidden; margin: 10px 0 6px;
+  }
+  .bar > span {
+    display: block; height: 100%; background: var(--accent); border-radius: 999px;
+    transition: width .4s ease;
+  }
+  /* Before rsync has printed anything there is no fraction to draw, only the
+     fact that something is happening. */
+  .bar.unknown > span {
+    width: 35%; background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: sweep 1.4s linear infinite;
+  }
+  @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+  @media (prefers-reduced-motion: reduce) {
+    .bar.unknown > span { animation: none; width: 100%; opacity: .35; }
+    .bar > span { transition: none; }
+  }
 </style>
 </head>
 <body>
@@ -259,6 +278,10 @@
           <h2 style="margin:0">Snapshots</h2>
           <button class="action" id="run-backup">Run now</button>
         </div>
+        <div id="backup-progress" hidden>
+          <div class="bar" id="progress-bar"><span></span></div>
+          <div class="muted" id="progress-text"></div>
+        </div>
         <p class="muted" style="margin:8px 0 12px">
           One dated folder per run, each a complete copy you can browse or restore from.
           Unchanged files are hard links to the previous snapshot, so only what changed
@@ -289,6 +312,7 @@
           <label class="switch" style="margin-bottom:14px">
             <input type="checkbox" id="backup-enabled">
             <span>Take snapshots on a schedule</span>
+            <span class="muted" id="enabled-state"></span>
           </label>
 
           <div class="fields">
@@ -431,6 +455,9 @@ document.querySelectorAll("nav button").forEach((button) => {
     // edit abandoned on an earlier visit is still sitting in the backup form,
     // and it reads exactly like the configuration the server is running.
     formTouched = false;
+    // The backup poll reschedules itself, so leaving the tab has to cancel it
+    // or the page goes on polling for a tab nobody is looking at.
+    if (activeTab !== "backups") clearTimeout(backupPoll);
     loaders[activeTab]?.();
   });
 });
@@ -807,6 +834,10 @@ function formatSoon(ms) {
 
 let backupPoll = null;
 
+// What the server last told us is in force, so an unsaved click on the switch
+// can be described as pending rather than as fact.
+let savedEnabled = false;
+
 // Set as soon as anyone types in the configuration form. The tab reloads
 // itself every few seconds while a backup runs, and refilling the inputs from
 // the server underneath someone mid-edit would throw away what they typed.
@@ -818,9 +849,16 @@ async function loadBackups() {
 
   // While rsync is going the page is the only place anyone can see it, so it
   // keeps itself current — and stops as soon as the run ends or the tab does.
+  // Polled while the tab is open, not only once a run is known about. Waiting
+  // for `running` to be true first meant the page could only ever show a run
+  // it had started itself: one that began on the schedule, or from another
+  // browser, finished unseen with the tab sitting open in front of someone.
   clearTimeout(backupPoll);
-  if (data.running && activeTab === "backups") {
-    backupPoll = setTimeout(() => loadBackups().catch(() => {}), 3000);
+  if (activeTab === "backups") {
+    // Fast enough that a progress bar does not read as stuck, and slow enough
+    // the rest of the time that an idle tab is not asking the disk for a
+    // snapshot listing every other second.
+    backupPoll = setTimeout(() => loadBackups().catch(() => {}), data.running ? 1500 : 10000);
   }
 }
 loaders.backups = loadBackups;
@@ -849,20 +887,32 @@ function renderBackups(data) {
   }
 
   const disk = data.health.disk;
+  // Whether the job is on at all comes first and is stated in both directions.
+  // It used to be inferable only from "next run" having a time in it, which
+  // meant the answer to "is this actually running?" was never written down.
+  const state = data.running ? "Running" : config.enabled ? "On" : "Off";
   const cards = [
+    ["Backups", state, data.running ? "" : config.enabled ? "" : "off"],
+    ["Next run", data.running ? "in progress" : (config.enabled ? formatSoon(data.next_run) : "not scheduled")],
     ["Last backup", metrics.last_success ? formatTime(metrics.last_success.finished_at) : "never"],
-    ["Next run", data.running ? "running now" : (config.enabled ? formatSoon(data.next_run) : "off")],
     ["Snapshots", String(data.snapshots.length)],
     ["Disk free", disk ? formatBytes(disk.free) : "—"],
     ["Successes in a row", String(metrics.streak)],
   ];
   const cardHost = $("backup-cards");
   cardHost.replaceChildren();
-  for (const [label, value] of cards) {
+  for (const [label, value, dim] of cards) {
     const div = document.createElement("div");
     div.className = "card";
     const l = document.createElement("div"); l.className = "label"; l.textContent = label;
-    const v = document.createElement("div"); v.className = "value"; v.textContent = value;
+    const v = document.createElement("div"); v.className = "value";
+    if (label === "Backups") {
+      const dot = document.createElement("span");
+      dot.className = "dot" + (dim === "off" ? " off" : "");
+      dot.style.width = dot.style.height = "9px";
+      v.append(dot);
+    }
+    v.append(document.createTextNode(value));
     div.append(l, v);
     cardHost.append(div);
   }
@@ -870,6 +920,7 @@ function renderBackups(data) {
   const run = $("run-backup");
   run.disabled = data.running;
   run.textContent = data.running ? "Running…" : "Run now";
+  renderProgress(data);
 
   if (!formTouched) fillBackupForm(config);
 
@@ -910,6 +961,51 @@ function renderPaths(paths, health) {
     tr.append(cell(label), valueCell);
     host.append(tr);
   }
+}
+
+function renderProgress(data) {
+  const host = $("backup-progress");
+  host.hidden = !data.running;
+  if (!data.running) return;
+
+  const bar = $("progress-bar");
+  const fill = bar.firstElementChild;
+  const elapsed = data.running_since ? formatDuration(Date.now() - data.running_since) : "";
+  const progress = data.progress;
+
+  // Three states, and they are genuinely different. No progress at all means
+  // rsync is still building the file list, which on a large tree is minutes of
+  // real work with nothing to count — an indeterminate bar is the honest
+  // picture. An rsync that cannot report at all gets no bar rather than one
+  // that would sit at zero looking broken.
+  if (!data.health.progress_supported) {
+    bar.hidden = true;
+    $("progress-text").textContent =
+      `Running for ${elapsed}. This rsync cannot report progress, so there is nothing to show until it finishes.`;
+    return;
+  }
+
+  bar.hidden = false;
+  if (!progress) {
+    bar.classList.add("unknown");
+    fill.style.width = "";
+    $("progress-text").textContent = `Building the file list · ${elapsed}`;
+    return;
+  }
+
+  bar.classList.remove("unknown");
+  fill.style.width = `${progress.percent}%`;
+
+  // Both counts, not just the percentage. rsync builds its file list as it
+  // goes, so the total climbs during the first seconds and the share can fall
+  // — seeing the denominator move says "it found more work" instead of leaving
+  // a bar that appears to run backwards for no reason.
+  const parts = [
+    `${progress.files_done.toLocaleString()} of ${progress.files_total.toLocaleString()} files`,
+    formatBytes(progress.bytes),
+  ];
+  if (elapsed) parts.push(elapsed);
+  $("progress-text").textContent = parts.join(" · ");
 }
 
 function renderSnapshots(snapshots) {
@@ -999,12 +1095,27 @@ function renderRuns(history) {
 
 $("backup-form").addEventListener("input", () => { formTouched = true; });
 
+// The saved state, spelled out beside the switch. A checkbox someone has just
+// clicked shows what they are about to save, not what is in force, so this
+// says which of the two they are looking at.
+function setEnabledState(enabled, pending) {
+  $("enabled-state").textContent = pending
+    ? (enabled ? "· will be turned on when you save" : "· will be turned off when you save")
+    : (enabled ? "· on" : "· off");
+}
+
+$("backup-enabled").addEventListener("change", (event) => {
+  setEnabledState(event.target.checked, event.target.checked !== savedEnabled);
+});
+
 function fillBackupForm(config) {
   $("backup-enabled").checked = config.enabled;
+  setEnabledState(config.enabled);
   $("backup-schedule").value = config.schedule;
   $("backup-daily").value = config.daily_retention;
   $("backup-weekly").value = config.weekly_retention;
   $("backup-monthly").value = config.monthly_retention;
+  savedEnabled = config.enabled;
   formTouched = false;
 }
 

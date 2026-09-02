@@ -44,6 +44,10 @@ type Health struct {
 	SourceExists   bool `json:"source_exists"`
 	SourceReadable bool `json:"source_readable"`
 	SourceEmpty    bool `json:"source_empty"`
+	// ProgressSupported is false where rsync cannot report how far it has got
+	// — openrsync, which macOS ships. The run works; only the bar is missing,
+	// and the page says which it is rather than showing one that never moves.
+	ProgressSupported bool `json:"progress_supported"`
 	// SourceMountpoint is reported, never enforced. The source is normally a
 	// bind mount, which is always a mountpoint inside the container whatever
 	// the host is doing — so it proves nothing, and requiring it would rule
@@ -88,6 +92,7 @@ func checkHealth(paths Paths) Health {
 
 	if _, err := exec.LookPath("rsync"); err == nil {
 		h.RsyncAvailable = true
+		h.ProgressSupported = progressSupport()
 	}
 
 	if info, err := os.Stat(paths.Source); err == nil && info.IsDir() {
@@ -146,7 +151,8 @@ func diskUsage(path string) *DiskUsage {
 // execute takes one snapshot and applies retention. It assumes nothing about
 // the caller beyond a validated config, and returns the Run to record whether
 // it succeeded or not.
-func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now time.Time) Run {
+func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now time.Time,
+	report func(Progress)) Run {
 	paths, cfg = paths.normalised(), cfg.normalised()
 	started := now
 	run := Run{
@@ -178,6 +184,15 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 	}
 
 	args := []string{"-a", "--delete", "--partial", "--stats"}
+	// progress2 gives a running total and a to-chk counter, which is what the
+	// page draws, and outbuf=L flushes it per line — without it rsync buffers
+	// when its output is a pipe rather than a terminal, and the whole run
+	// arrives at once, after it is over. Added only where rsync understands
+	// them: openrsync, which is what macOS ships, fails the run outright on an
+	// option it does not know.
+	if report != nil && progressSupport() {
+		args = append(args, "--info=progress2", "--outbuf=L")
+	}
 	// The newest snapshot that is not the one being written. Deliberately not
 	// the "latest" symlink: a second run on the same day would find it already
 	// pointing at today's directory and hard-link the snapshot against itself.
@@ -192,14 +207,13 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, "rsync", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
+	stdout := &progressWriter{report: report}
+	var stderr bytes.Buffer
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
 
-	// Without -v, rsync prints only the --stats block, so both buffers stay
-	// small however many files move.
 	err = cmd.Run()
-	stats := parseStats(stdout.String())
+	stats := parseStats(stdout.output())
 	run.Stats = &stats
 
 	if err != nil {
@@ -215,9 +229,9 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 		case errors.As(err, &exit) && exit.ExitCode() == exitPartial:
 			return finish(StatusFailed, "rsync could not read part of the source (exit 23). "+
 				"The server runs unprivileged, so files owned by another user are unreadable "+
-				"unless the container runs as root. "+lastLine(stderr.String()))
+				"unless the container runs as root. "+cause(stderr.String()))
 		default:
-			return finish(StatusFailed, fmt.Sprintf("rsync failed: %v. %s", err, lastLine(stderr.String())))
+			return finish(StatusFailed, fmt.Sprintf("rsync failed: %v. %s", err, cause(stderr.String())))
 		}
 	}
 
@@ -267,12 +281,18 @@ func appendWarning(existing, addition string) string {
 	return existing + "; " + addition
 }
 
-// lastLine is the most useful part of rsync's stderr for a message: the final
-// line is the summary, the ones above it are per-file noise.
-func lastLine(text string) string {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if line := strings.TrimSpace(lines[i]); line != "" {
+// cause is the first line of rsync's stderr, which is where it says what
+// actually went wrong. The last line is a summary that only repeats the exit
+// code — "rsync error: errors selecting input/output files, dirs (code 3)" —
+// and reporting that instead, as this did, told an operator nothing they could
+// act on. The line above it is the one that names the file or the path.
+func cause(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			// Long enough for a path, short enough to sit in a table cell.
+			if len(line) > 300 {
+				return line[:300] + "…"
+			}
 			return line
 		}
 	}

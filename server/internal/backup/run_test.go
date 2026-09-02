@@ -167,7 +167,7 @@ func TestExecuteTakesIncrementalSnapshots(t *testing.T) {
 	cfg := DefaultConfig()
 
 	day1 := time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC)
-	first := execute(context.Background(), paths, cfg, TriggerManual, day1)
+	first := execute(context.Background(), paths, cfg, TriggerManual, day1, nil)
 	if first.Status != StatusSuccess {
 		t.Fatalf("first run failed: %s", first.Error)
 	}
@@ -184,7 +184,7 @@ func TestExecuteTakesIncrementalSnapshots(t *testing.T) {
 	}
 
 	day2 := day1.AddDate(0, 0, 1)
-	second := execute(context.Background(), paths, cfg, TriggerSchedule, day2)
+	second := execute(context.Background(), paths, cfg, TriggerSchedule, day2, nil)
 	if second.Status != StatusSuccess {
 		t.Fatalf("second run failed: %s", second.Error)
 	}
@@ -237,7 +237,7 @@ func TestExecuteRefusesWithoutTheMarker(t *testing.T) {
 	paths := DefaultPaths()
 	paths.Source, paths.Dest = source, dest
 
-	run := execute(context.Background(), paths, DefaultConfig(), TriggerSchedule, time.Now())
+	run := execute(context.Background(), paths, DefaultConfig(), TriggerSchedule, time.Now(), nil)
 	if run.Status != StatusFailed {
 		t.Fatalf("the run reported %q with no marker present", run.Status)
 	}
@@ -288,4 +288,24 @@ func sameFile(t *testing.T, a, b string) bool {
 		t.Fatal(err)
 	}
 	return os.SameFile(infoA, infoB)
+}
+
+// rsync says what went wrong on the first line and repeats the exit code on
+// the last. Reporting the last one gave an operator "errors selecting
+// input/output files, dirs (code 3)" and no idea which file, or where.
+func TestCauseTakesTheLineThatSaysWhy(t *testing.T) {
+	stderr := `rsync: [Receiver] change_dir "/backup/2026-01-01" failed: No such file or directory (2)
+rsync error: errors selecting input/output files, dirs (code 3) at main.c(768) [Receiver=3.5.0]
+`
+	got := cause(stderr)
+	if !strings.Contains(got, "change_dir") {
+		t.Errorf("cause = %q, which does not say what failed", got)
+	}
+
+	if got := cause("--link-dest arg does not exist: /backup/gone\n"); got != "--link-dest arg does not exist: /backup/gone" {
+		t.Errorf("a single-line stderr came back as %q", got)
+	}
+	if got := cause("   \n\n"); got != "" {
+		t.Errorf("empty stderr came back as %q", got)
+	}
 }

@@ -136,6 +136,16 @@ somewhere nothing is mounted, which is a backup of nothing that looks like a
 backup of something. To change what is copied, change the mount. What the page
 does own is the policy: whether the job runs, when, and how much it keeps.
 
+While a run is going the page shows how far it has got: a bar over rsync's
+count of files handled, with both counts beside it. Not a percentage of bytes —
+rsync measures that against an estimate, and with `--link-dest` most files are
+skipped instantly, so it reads 99% in the first seconds of a run with hours
+left. The file list is also built as the run goes, so the total climbs early
+on; showing both numbers says "it found more work" rather than leaving a bar
+that appears to run backwards. On rsync builds that cannot report progress —
+openrsync, which macOS ships — the page says so instead of drawing a bar that
+never moves.
+
 Old snapshots are thinned grandfather-father-son: the last 7 daily snapshots,
 the newest snapshot of each of the last 4 ISO weeks, and the newest of each of
 the last 6 months. Because the snapshots share inodes, deleting the ones in
