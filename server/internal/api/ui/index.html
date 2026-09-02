@@ -431,6 +431,10 @@ document.querySelectorAll("nav button").forEach((button) => {
       b.setAttribute("aria-selected", String(b === button)));
     document.querySelectorAll("main section").forEach((s) =>
       s.hidden = s.id !== `tab-${activeTab}`);
+    // Arriving at a tab shows what is actually in effect. Without this, an
+    // edit abandoned on an earlier visit is still sitting in the backup form,
+    // and it reads exactly like the configuration the server is running.
+    formTouched = false;
     loaders[activeTab]?.();
   });
 });
