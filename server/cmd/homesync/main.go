@@ -55,22 +55,30 @@ Environment:
   ADMIN_NO_AUTH     Serve the admin UI with no login at all
   LOG_LEVEL         debug|info|warn|error        (default info)
 
-Backups. These seed the configuration the first time the server starts; after
-that the admin UI owns it, and changing them has no effect.
+Backups, where things are. Read on every start, and shown on the admin page
+without being editable there: these describe the container's volumes, and no
+amount of saving moves a mount.
+
+  BACKUP_SOURCE     Directory to snapshot        (default /backup-source)
+  BACKUP_DIR        Where snapshots go           (default /backup)
+  BACKUP_MARKER     File proving the disk is mounted (default .homesync_backup_disk)
+
+Backups, what the job does. These seed the configuration the first time the
+server starts; from the first save on the admin page onwards it owns them, and
+changing these has no effect.
 
   BACKUP_ENABLED    Take dated snapshots         (default false)
-  BACKUP_SOURCE     Directory to snapshot        (default /data)
-  BACKUP_DIR        Where snapshots go           (default /backup)
   BACKUP_SCHEDULE   Five-field cron expression   (default "0 3 * * *")
-  BACKUP_MARKER     File proving the disk is mounted (default .homesync_backup_disk)
   BACKUP_DAILY      Daily snapshots to keep      (default 7)
   BACKUP_WEEKLY     ISO weeks to keep one of     (default 4)
   BACKUP_MONTHLY    Months to keep one of        (default 6)
 
-Each run writes BACKUP_DIR/YYYY-MM-DD with rsync --link-dest, so unchanged
-files are hard links to the previous snapshot and cost no space. The marker
-file is what stops a run when the backup disk is not mounted: a bind mount is
-always a mountpoint inside the container, so the mount itself proves nothing.
+Mount what should be copied at /backup-source and the disk it goes to at
+/backup and there is nothing to set. Each run writes BACKUP_DIR/YYYY-MM-DD with
+rsync --link-dest, so unchanged files are hard links to the previous snapshot
+and cost no space. The marker file is what stops a run when the backup disk is
+not mounted: a bind mount is always a mountpoint inside the container, so the
+mount itself proves nothing.
 
 Encryption applies to new writes. Turning it on leaves the files already on
 the volume as they are, readable either way; "homesync key encrypt" converts
@@ -91,6 +99,7 @@ type config struct {
 	adminPassword  string
 	adminNoAuth    bool
 	encryptionKey  string
+	backupPaths    backup.Paths
 	backup         backup.Config
 }
 
@@ -155,7 +164,21 @@ func loadConfig() config {
 		adminPassword:  os.Getenv("ADMIN_PASSWORD"),
 		adminNoAuth:    envBool("ADMIN_NO_AUTH", false),
 		encryptionKey:  os.Getenv("ENCRYPTION_KEY"),
+		backupPaths:    backupPaths(),
 		backup:         backupConfig(),
+	}
+}
+
+// backupPaths is where the volumes are, and the environment is the only place
+// that can say. Unlike the policy below, this is read on every start rather
+// than seeding one: moving a mount has to move the path with it, and a value
+// saved months ago would go on naming the old one.
+func backupPaths() backup.Paths {
+	defaults := backup.DefaultPaths()
+	return backup.Paths{
+		Source: env("BACKUP_SOURCE", defaults.Source),
+		Dest:   env("BACKUP_DIR", defaults.Dest),
+		Marker: env("BACKUP_MARKER", defaults.Marker),
 	}
 }
 
@@ -165,14 +188,11 @@ func loadConfig() config {
 func backupConfig() backup.Config {
 	defaults := backup.DefaultConfig()
 	return backup.Config{
-		Enabled:   envBool("BACKUP_ENABLED", defaults.Enabled),
-		SourceDir: env("BACKUP_SOURCE", defaults.SourceDir),
-		BackupDir: env("BACKUP_DIR", defaults.BackupDir),
-		Schedule:  env("BACKUP_SCHEDULE", defaults.Schedule),
-		Marker:    env("BACKUP_MARKER", defaults.Marker),
-		Daily:     envInt("BACKUP_DAILY", defaults.Daily),
-		Weekly:    envInt("BACKUP_WEEKLY", defaults.Weekly),
-		Monthly:   envInt("BACKUP_MONTHLY", defaults.Monthly),
+		Enabled:  envBool("BACKUP_ENABLED", defaults.Enabled),
+		Schedule: env("BACKUP_SCHEDULE", defaults.Schedule),
+		Daily:    envInt("BACKUP_DAILY", defaults.Daily),
+		Weekly:   envInt("BACKUP_WEEKLY", defaults.Weekly),
+		Monthly:  envInt("BACKUP_MONTHLY", defaults.Monthly),
 	}
 }
 
@@ -302,7 +322,16 @@ func serve(cfg config) error {
 
 	go runJanitor(ctx, ix, st, tr, rules, cfg)
 
-	backups, err := backup.New(ctx, ix, cfg.backup)
+	// Validated here rather than at the first run, so a mount that is not
+	// where the server thinks it is says so on startup instead of at 03:00.
+	// Not fatal: syncing has nothing to do with backups, and refusing to serve
+	// files because a backup path is wrong would be a poor trade.
+	if err := cfg.backupPaths.Validate(); err != nil {
+		slog.Error("backup paths are unusable; the job will refuse to run",
+			"source", cfg.backupPaths.Source, "dest", cfg.backupPaths.Dest, "err", err)
+	}
+
+	backups, err := backup.New(ctx, ix, cfg.backupPaths, cfg.backup)
 	if err != nil {
 		return err
 	}
@@ -312,7 +341,7 @@ func serve(cfg config) error {
 	go backups.Run(ctx)
 	if active := backups.Config(); active.Enabled {
 		slog.Info("backups enabled", "schedule", active.Schedule,
-			"source", active.SourceDir, "dest", active.BackupDir)
+			"source", cfg.backupPaths.Source, "dest", cfg.backupPaths.Dest)
 	}
 
 	handler := api.New(ix, st, tr, rules, backups)

@@ -57,58 +57,58 @@ type Health struct {
 
 // Problem returns the reason a run would refuse to start, or "" when it would
 // go ahead.
-func (h Health) Problem(cfg Config) string {
+func (h Health) Problem(paths Paths) string {
 	switch {
 	case !h.RsyncAvailable:
 		return "rsync is not installed in this image"
 	case !h.SourceExists:
-		return fmt.Sprintf("the source %s does not exist — check the volume mount", cfg.SourceDir)
+		return fmt.Sprintf("the source %s does not exist — check the volume mount", paths.Source)
 	case !h.SourceReadable:
 		return fmt.Sprintf("the source %s cannot be read — the server runs unprivileged, "+
-			"so a directory owned by another user needs the container to run as root", cfg.SourceDir)
+			"so a directory owned by another user needs the container to run as root", paths.Source)
 	case h.SourceEmpty:
 		// A snapshot of an empty source would become "latest", and tomorrow's
 		// --link-dest would then have nothing to link against: a source that
 		// disappeared would quietly cost a full copy and hide the problem.
-		return fmt.Sprintf("the source %s is empty — refusing to snapshot nothing", cfg.SourceDir)
+		return fmt.Sprintf("the source %s is empty — refusing to snapshot nothing", paths.Source)
 	case !h.BackupDirExists:
-		return fmt.Sprintf("the backup directory %s does not exist — check the volume mount", cfg.BackupDir)
+		return fmt.Sprintf("the backup directory %s does not exist — check the volume mount", paths.Dest)
 	case !h.MarkerPresent:
 		return fmt.Sprintf("the marker %q is missing from %s, so the backup disk is probably not "+
 			"mounted; create it once with the disk mounted: touch %s",
-			cfg.Marker, cfg.BackupDir, filepath.Join(cfg.BackupDir, cfg.Marker))
+			paths.Marker, paths.Dest, filepath.Join(paths.Dest, paths.Marker))
 	}
 	return ""
 }
 
 // checkHealth answers every question a run asks, without changing anything.
-func checkHealth(cfg Config) Health {
-	cfg = cfg.normalised()
+func checkHealth(paths Paths) Health {
+	paths = paths.normalised()
 	var h Health
 
 	if _, err := exec.LookPath("rsync"); err == nil {
 		h.RsyncAvailable = true
 	}
 
-	if info, err := os.Stat(cfg.SourceDir); err == nil && info.IsDir() {
+	if info, err := os.Stat(paths.Source); err == nil && info.IsDir() {
 		h.SourceExists = true
-		h.SourceMountpoint = isMountpoint(cfg.SourceDir)
+		h.SourceMountpoint = isMountpoint(paths.Source)
 		// Opening the directory is the cheap half of the question. Whether
 		// every file below it is readable only rsync can say, and it says so
 		// with exit code 23.
-		if entries, err := os.ReadDir(cfg.SourceDir); err == nil {
+		if entries, err := os.ReadDir(paths.Source); err == nil {
 			h.SourceReadable = true
 			h.SourceEmpty = len(entries) == 0
 		}
 	}
 
-	if info, err := os.Stat(cfg.BackupDir); err == nil && info.IsDir() {
+	if info, err := os.Stat(paths.Dest); err == nil && info.IsDir() {
 		h.BackupDirExists = true
-		if _, err := os.Lstat(filepath.Join(cfg.BackupDir, cfg.Marker)); err == nil {
+		if _, err := os.Lstat(filepath.Join(paths.Dest, paths.Marker)); err == nil {
 			h.MarkerPresent = true
 		}
-		h.Disk = diskUsage(cfg.BackupDir)
-		if target, err := os.Readlink(filepath.Join(cfg.BackupDir, "latest")); err == nil {
+		h.Disk = diskUsage(paths.Dest)
+		if target, err := os.Readlink(filepath.Join(paths.Dest, "latest")); err == nil {
 			h.Latest = target
 		}
 	}
@@ -146,8 +146,8 @@ func diskUsage(path string) *DiskUsage {
 // execute takes one snapshot and applies retention. It assumes nothing about
 // the caller beyond a validated config, and returns the Run to record whether
 // it succeeded or not.
-func execute(ctx context.Context, cfg Config, trigger string, now time.Time) Run {
-	cfg = cfg.normalised()
+func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now time.Time) Run {
+	paths, cfg = paths.normalised(), cfg.normalised()
 	started := now
 	run := Run{
 		StartedAt: started.UnixMilli(),
@@ -164,15 +164,15 @@ func execute(ctx context.Context, cfg Config, trigger string, now time.Time) Run
 		return run
 	}
 
-	if problem := checkHealth(cfg).Problem(cfg); problem != "" {
+	if problem := checkHealth(paths).Problem(paths); problem != "" {
 		return finish(StatusFailed, problem)
 	}
 
 	name := started.Format(snapshotLayout)
 	run.Snapshot = name
-	dest := filepath.Join(cfg.BackupDir, name)
+	dest := filepath.Join(paths.Dest, name)
 
-	snapshots, err := ListSnapshots(cfg.BackupDir)
+	snapshots, err := ListSnapshots(paths.Dest)
 	if err != nil {
 		return finish(StatusFailed, "cannot read the backup directory: "+err.Error())
 	}
@@ -182,11 +182,11 @@ func execute(ctx context.Context, cfg Config, trigger string, now time.Time) Run
 	// the "latest" symlink: a second run on the same day would find it already
 	// pointing at today's directory and hard-link the snapshot against itself.
 	if previous := previousSnapshot(snapshots, name); previous != "" {
-		args = append(args, "--link-dest="+filepath.Join(cfg.BackupDir, previous))
+		args = append(args, "--link-dest="+filepath.Join(paths.Dest, previous))
 	}
 	// The trailing slash is load-bearing: it copies the contents of the source
 	// rather than the source directory itself.
-	args = append(args, cfg.SourceDir+string(filepath.Separator), dest)
+	args = append(args, paths.Source+string(filepath.Separator), dest)
 
 	runCtx, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()
@@ -223,7 +223,7 @@ func execute(ctx context.Context, cfg Config, trigger string, now time.Time) Run
 
 	// Relative, so the link resolves both inside the container and on the host
 	// where the disk is actually mounted.
-	link := filepath.Join(cfg.BackupDir, "latest")
+	link := filepath.Join(paths.Dest, "latest")
 	if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
 		run.Warning = appendWarning(run.Warning, "could not replace the 'latest' link: "+err.Error())
 	} else if err := os.Symlink(name, link); err != nil {
@@ -232,12 +232,12 @@ func execute(ctx context.Context, cfg Config, trigger string, now time.Time) Run
 
 	// Re-read: the snapshot just written has to be part of what retention
 	// counts, or the run would prune as though it had one fewer daily.
-	snapshots, err = ListSnapshots(cfg.BackupDir)
+	snapshots, err = ListSnapshots(paths.Dest)
 	if err != nil {
 		run.Warning = appendWarning(run.Warning, "could not apply retention: "+err.Error())
 		return finish(StatusSuccess, "")
 	}
-	removed, err := prune(cfg.BackupDir, Classify(snapshots, cfg))
+	removed, err := prune(paths.Dest, Classify(snapshots, cfg))
 	run.Pruned = removed
 	if run.Pruned == nil {
 		run.Pruned = []string{}

@@ -10,6 +10,11 @@
 // process, and keeping the history where the admin UI could read it needed a
 // shared volume, so it lives here instead — one binary, and the state is in
 // the index next to everything else the UI shows.
+//
+// What it needs is split in two, because the two halves have different owners.
+// Paths say where things are: they are decided by the container's volumes and
+// are fixed for the life of the process. Config says what the job does: it is
+// policy, it is saved in the index, and the admin page is where it is set.
 package backup
 
 import (
@@ -23,29 +28,58 @@ import (
 	"github.com/schmidt-gabriel/homesync/server/internal/index"
 )
 
-// configKey is where the document lives in the index's meta table. It is the
-// source of truth once written: the environment only seeds the first start,
-// the same way the shared ignore rules work.
+// configKey is where the policy document lives in the index's meta table.
 const configKey = "backup_config"
 
-// Config is everything the job needs, and everything the admin UI can change.
-type Config struct {
-	// Enabled false leaves the schedule stopped. Nothing else is validated
-	// away, so a half-finished configuration can be saved and turned on later.
-	Enabled bool `json:"enabled"`
+// Paths are the locations the job works with. They come from the environment
+// and are never editable at runtime, because they are not really settings:
+// they are where the volumes are mounted, and the server cannot move a mount.
+// A path that could be changed from the admin page could be pointed at
+// somewhere nothing is mounted, which is a backup of nothing that looks like a
+// backup of something.
+//
+// The defaults are the whole convention: mount what should be copied at
+// /backup-source and the disk it goes to at /backup, and there is nothing to
+// configure.
+type Paths struct {
+	// Source is what gets copied. /backup-source rather than /data because
+	// what is worth backing up is rarely only what this server syncs — the
+	// synced volume is usually a subtree of it.
+	Source string `json:"source_dir"`
 
-	// SourceDir and BackupDir are paths inside the container, so changing
-	// either from the UI only makes sense for something already mounted.
-	SourceDir string `json:"source_dir"`
-	BackupDir string `json:"backup_dir"`
+	// Dest is where the dated snapshots are written. Another disk, which is
+	// the entire point: it has to survive the one the data is on.
+	Dest string `json:"backup_dir"`
+
+	// Marker is a file that must exist in Dest for a run to start, and it
+	// belongs here rather than in the policy because it describes the disk. It
+	// is the only reliable way to tell that the disk is mounted at all: Dest
+	// is a bind mount, so it is always a mountpoint inside the container even
+	// when the host disk is absent, and the bind then resolves to the empty
+	// directory underneath it — on the root partition, which a run would
+	// proceed to fill.
+	Marker string `json:"marker"`
+}
+
+// DefaultPaths is the convention a container that mounts nothing else follows.
+func DefaultPaths() Paths {
+	return Paths{
+		Source: "/backup-source",
+		Dest:   "/backup",
+		Marker: ".homesync_backup_disk",
+	}
+}
+
+// Config is the policy: whether the job runs, when, and how much it keeps.
+// This is what the admin page writes and what is stored in the index.
+type Config struct {
+	// Enabled false leaves the schedule stopped. Backups start off, because a
+	// sync server that began copying a directory nobody nominated would be a
+	// surprise.
+	Enabled bool `json:"enabled"`
 
 	// Schedule is a five-field cron expression, read in the server's timezone.
 	Schedule string `json:"schedule"`
-
-	// Marker is a file that must exist in BackupDir for a run to start. See
-	// checkMarker: it is the only reliable way to tell that the backup disk is
-	// actually mounted.
-	Marker string `json:"marker"`
 
 	// Retention, per tier. See Classify.
 	Daily   int `json:"daily_retention"`
@@ -53,35 +87,26 @@ type Config struct {
 	Monthly int `json:"monthly_retention"`
 }
 
-// DefaultConfig is what an unconfigured server reports. Disabled: a sync
-// server that started making copies of a directory nobody nominated would be
-// a surprise, and the destination has to be mounted to be worth anything.
+// DefaultConfig is what an unconfigured server reports.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:   false,
-		SourceDir: "/data",
-		BackupDir: "/backup",
-		Schedule:  "0 3 * * *",
-		Marker:    ".homesync_backup_disk",
-		Daily:     7,
-		Weekly:    4,
-		Monthly:   6,
+		Enabled:  false,
+		Schedule: "0 3 * * *",
+		Daily:    7,
+		Weekly:   4,
+		Monthly:  6,
 	}
 }
 
-// Validate reports what would stop this configuration from running, with the
-// destination checked hardest: rsync is being handed a --delete and a path,
-// and the paths are the part a person types.
-func (c Config) Validate() error {
-	if _, err := ParseSchedule(c.Schedule); err != nil {
-		return fmt.Errorf("schedule: %w", err)
-	}
-
-	source, err := cleanDir(c.SourceDir, "source directory")
+// Validate reports what would stop these paths from working. Checked once at
+// startup rather than on every save, and the destination hardest: rsync is
+// being handed a --delete and a path.
+func (p Paths) Validate() error {
+	source, err := cleanDir(p.Source, "source directory")
 	if err != nil {
 		return err
 	}
-	dest, err := cleanDir(c.BackupDir, "backup directory")
+	dest, err := cleanDir(p.Dest, "backup directory")
 	if err != nil {
 		return err
 	}
@@ -99,13 +124,30 @@ func (c Config) Validate() error {
 		return errors.New("the source is inside the backup directory; retention would delete the originals")
 	}
 
-	if strings.TrimSpace(c.Marker) == "" {
+	if strings.TrimSpace(p.Marker) == "" {
 		return errors.New("marker: required — it is what proves the backup disk is mounted")
 	}
-	if strings.ContainsRune(c.Marker, '/') {
+	if strings.ContainsRune(p.Marker, '/') {
 		return errors.New("marker: a file name, not a path")
 	}
+	return nil
+}
 
+// normalised returns the paths cleaned, which is what the rest of the package
+// works with. Only validated paths reach it.
+func (p Paths) normalised() Paths {
+	return Paths{
+		Source: filepath.Clean(p.Source),
+		Dest:   filepath.Clean(p.Dest),
+		Marker: strings.TrimSpace(p.Marker),
+	}
+}
+
+// Validate reports what would stop this policy from running.
+func (c Config) Validate() error {
+	if _, err := ParseSchedule(c.Schedule); err != nil {
+		return fmt.Errorf("schedule: %w", err)
+	}
 	// Without at least one daily, a run would prune the snapshot it just took
 	// on any day that is neither the first of its week nor of its month.
 	if c.Daily < 1 {
@@ -117,12 +159,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// normalised returns the config with its paths cleaned, which is what the rest
-// of the package works with. Only valid configs reach it.
 func (c Config) normalised() Config {
-	c.SourceDir = filepath.Clean(c.SourceDir)
-	c.BackupDir = filepath.Clean(c.BackupDir)
-	c.Marker = strings.TrimSpace(c.Marker)
 	c.Schedule = strings.TrimSpace(c.Schedule)
 	return c
 }
@@ -142,15 +179,20 @@ func cleanDir(path, what string) (string, error) {
 	return clean, nil
 }
 
-// within reports whether path sits inside dir. Both are already cleaned.
+// within reports whether path sits inside dir. Both are already cleaned. The
+// separator matters: /backup-source is not inside /backup.
 func within(path, dir string) bool {
 	return strings.HasPrefix(path, dir+string(filepath.Separator))
 }
 
-// LoadConfig reads the stored document, falling back to fallback when nothing
+// LoadConfig reads the stored policy, falling back to fallback when nothing
 // has been saved yet. A document that no longer parses — a downgrade, a hand
 // edit — is reported rather than silently replaced by the defaults, which
 // would turn a typo into a differently-configured backup.
+//
+// Documents written before the paths moved out of this struct still carry
+// them. They are ignored, which is the intended outcome: where things are is
+// the container's business now, not a saved preference.
 func LoadConfig(ctx context.Context, ix *index.Index, fallback Config) (Config, error) {
 	raw, err := ix.GetMeta(ctx, configKey, "")
 	if err != nil {
@@ -170,7 +212,7 @@ func LoadConfig(ctx context.Context, ix *index.Index, fallback Config) (Config, 
 	return cfg, nil
 }
 
-// SaveConfig writes the document. Callers validate first.
+// SaveConfig writes the policy document. Callers validate first.
 func SaveConfig(ctx context.Context, ix *index.Index, cfg Config) error {
 	raw, err := json.Marshal(cfg)
 	if err != nil {

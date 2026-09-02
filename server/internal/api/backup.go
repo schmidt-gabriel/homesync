@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -23,12 +24,39 @@ func (s *Server) handleAdminBackupStatus(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, status)
 }
 
+// readOnlyFields are the ones a request cannot set: they describe where the
+// container's volumes are mounted, and no amount of saving moves a mount.
+var readOnlyFields = []string{"source_dir", "backup_dir", "marker"}
+
 func (s *Server) handleAdminBackupConfig(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<10))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "expected a backup configuration object")
+		return
+	}
+
+	// Refused rather than ignored. Dropping an unknown field silently would
+	// answer 200 to a request that changed nothing the caller asked for, and
+	// the caller would have no way to tell.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "expected a backup configuration object")
+		return
+	}
+	for _, field := range readOnlyFields {
+		if _, present := raw[field]; present {
+			writeError(w, http.StatusBadRequest, "read_only",
+				field+" is where the container's volume is mounted, not a setting; "+
+					"change it by changing the mount")
+			return
+		}
+	}
+
 	// Decoded onto the current configuration, so the page can send just the
 	// field it changed — the enable switch does not have to know every other
 	// value to avoid resetting it.
 	cfg := s.backups.Config()
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&cfg); err != nil {
+	if err := json.Unmarshal(body, &cfg); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", "expected a backup configuration object")
 		return
 	}
@@ -40,8 +68,7 @@ func (s *Server) handleAdminBackupConfig(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	slog.Info("backup configuration saved", "enabled", cfg.Enabled,
-		"schedule", cfg.Schedule, "source", cfg.SourceDir, "dest", cfg.BackupDir)
+	slog.Info("backup configuration saved", "enabled", cfg.Enabled, "schedule", cfg.Schedule)
 
 	status, err := s.backups.Status(r.Context())
 	if err != nil {

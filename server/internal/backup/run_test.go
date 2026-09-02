@@ -63,31 +63,50 @@ func TestParseStatsToleratesMissingLabels(t *testing.T) {
 }
 
 func TestConfigValidate(t *testing.T) {
-	valid := func() Config {
-		c := DefaultConfig()
-		c.SourceDir, c.BackupDir = "/data", "/backup"
-		return c
-	}
-	if err := valid().Validate(); err != nil {
+	if err := DefaultConfig().Validate(); err != nil {
 		t.Fatalf("the defaults do not validate: %v", err)
 	}
 
 	cases := map[string]func(*Config){
-		"same path":                 func(c *Config) { c.BackupDir = c.SourceDir },
-		"destination inside source": func(c *Config) { c.BackupDir = "/data/backups" },
-		"source inside destination": func(c *Config) { c.SourceDir = "/backup/live" },
-		"relative source":           func(c *Config) { c.SourceDir = "data" },
-		"root as destination":       func(c *Config) { c.BackupDir = "/" },
-		"empty marker":              func(c *Config) { c.Marker = "  " },
-		"marker with a path":        func(c *Config) { c.Marker = "sub/.marker" },
-		"no dailies":                func(c *Config) { c.Daily = 0 },
-		"negative weekly":           func(c *Config) { c.Weekly = -1 },
-		"unparseable schedule":      func(c *Config) { c.Schedule = "every night" },
+		"no dailies":           func(c *Config) { c.Daily = 0 },
+		"negative weekly":      func(c *Config) { c.Weekly = -1 },
+		"negative monthly":     func(c *Config) { c.Monthly = -1 },
+		"unparseable schedule": func(c *Config) { c.Schedule = "every night" },
 	}
-	for name, break_ := range cases {
-		cfg := valid()
-		break_(&cfg)
+	for name, breakIt := range cases {
+		cfg := DefaultConfig()
+		breakIt(&cfg)
 		if err := cfg.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// The defaults are the convention the compose file is written around: mount
+// what to copy at /backup-source and the disk at /backup. /backup-source
+// starts with /backup, so a containment check comparing prefixes without the
+// separator would reject the out-of-the-box setup as "the source is inside the
+// backup directory".
+func TestDefaultPathsValidate(t *testing.T) {
+	if err := DefaultPaths().Validate(); err != nil {
+		t.Fatalf("the default paths do not validate: %v", err)
+	}
+}
+
+func TestPathsValidate(t *testing.T) {
+	cases := map[string]func(*Paths){
+		"same path":                 func(p *Paths) { p.Dest = p.Source },
+		"destination inside source": func(p *Paths) { p.Dest = "/backup-source/snapshots" },
+		"source inside destination": func(p *Paths) { p.Source = "/backup/live" },
+		"relative source":           func(p *Paths) { p.Source = "backup-source" },
+		"root as destination":       func(p *Paths) { p.Dest = "/" },
+		"empty marker":              func(p *Paths) { p.Marker = "  " },
+		"marker with a path":        func(p *Paths) { p.Marker = "sub/.marker" },
+	}
+	for name, breakIt := range cases {
+		paths := DefaultPaths()
+		breakIt(&paths)
+		if err := paths.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -97,29 +116,29 @@ func TestHealthProblem(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
 	dest := filepath.Join(dir, "backup")
-	cfg := DefaultConfig()
-	cfg.SourceDir, cfg.BackupDir = source, dest
+	paths := DefaultPaths()
+	paths.Source, paths.Dest = source, dest
 
-	if problem := checkHealth(cfg).Problem(cfg); !strings.Contains(problem, "does not exist") {
+	if problem := checkHealth(paths).Problem(paths); !strings.Contains(problem, "does not exist") {
 		t.Errorf("a missing source gave %q", problem)
 	}
 
 	mustMkdir(t, source)
 	mustMkdir(t, dest)
-	if problem := checkHealth(cfg).Problem(cfg); !strings.Contains(problem, "is empty") {
+	if problem := checkHealth(paths).Problem(paths); !strings.Contains(problem, "is empty") {
 		t.Errorf("an empty source gave %q", problem)
 	}
 
 	mustWrite(t, filepath.Join(source, "a.txt"), "content")
 	// The marker is the one check that stands between a run and filling the
 	// root partition when the backup disk is not mounted.
-	problem := checkHealth(cfg).Problem(cfg)
-	if !strings.Contains(problem, cfg.Marker) {
+	problem := checkHealth(paths).Problem(paths)
+	if !strings.Contains(problem, paths.Marker) {
 		t.Errorf("a missing marker gave %q", problem)
 	}
 
-	mustWrite(t, filepath.Join(dest, cfg.Marker), "")
-	if problem := checkHealth(cfg).Problem(cfg); problem != "" {
+	mustWrite(t, filepath.Join(dest, paths.Marker), "")
+	if problem := checkHealth(paths).Problem(paths); problem != "" {
 		t.Errorf("a healthy setup reported %q", problem)
 	}
 }
@@ -143,12 +162,12 @@ func TestExecuteTakesIncrementalSnapshots(t *testing.T) {
 	mustWrite(t, filepath.Join(source, "volatile.txt"), "before")
 	mustWrite(t, filepath.Join(source, "doomed.txt"), "delete me")
 
+	paths := DefaultPaths()
+	paths.Source, paths.Dest = source, dest
 	cfg := DefaultConfig()
-	cfg.SourceDir, cfg.BackupDir = source, dest
-	cfg.Daily, cfg.Weekly, cfg.Monthly = 7, 4, 6
 
 	day1 := time.Date(2026, 1, 1, 3, 0, 0, 0, time.UTC)
-	first := execute(context.Background(), cfg, TriggerManual, day1)
+	first := execute(context.Background(), paths, cfg, TriggerManual, day1)
 	if first.Status != StatusSuccess {
 		t.Fatalf("first run failed: %s", first.Error)
 	}
@@ -165,7 +184,7 @@ func TestExecuteTakesIncrementalSnapshots(t *testing.T) {
 	}
 
 	day2 := day1.AddDate(0, 0, 1)
-	second := execute(context.Background(), cfg, TriggerSchedule, day2)
+	second := execute(context.Background(), paths, cfg, TriggerSchedule, day2)
 	if second.Status != StatusSuccess {
 		t.Fatalf("second run failed: %s", second.Error)
 	}
@@ -215,14 +234,14 @@ func TestExecuteRefusesWithoutTheMarker(t *testing.T) {
 	mustMkdir(t, dest)
 	mustWrite(t, filepath.Join(source, "a.txt"), "content")
 
-	cfg := DefaultConfig()
-	cfg.SourceDir, cfg.BackupDir = source, dest
+	paths := DefaultPaths()
+	paths.Source, paths.Dest = source, dest
 
-	run := execute(context.Background(), cfg, TriggerSchedule, time.Now())
+	run := execute(context.Background(), paths, DefaultConfig(), TriggerSchedule, time.Now())
 	if run.Status != StatusFailed {
 		t.Fatalf("the run reported %q with no marker present", run.Status)
 	}
-	if !strings.Contains(run.Error, cfg.Marker) {
+	if !strings.Contains(run.Error, paths.Marker) {
 		t.Errorf("the error does not name the marker: %s", run.Error)
 	}
 	entries, err := os.ReadDir(dest)

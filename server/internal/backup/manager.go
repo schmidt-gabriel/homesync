@@ -18,6 +18,11 @@ var ErrRunning = errors.New("a backup is already running")
 type Manager struct {
 	index *index.Index
 
+	// paths never change after New: they come from the environment, are
+	// validated once, and the admin page shows them without offering to edit
+	// them. Nothing takes the lock to read them.
+	paths Paths
+
 	mu        sync.Mutex
 	cfg       Config
 	running   bool
@@ -34,17 +39,22 @@ type Manager struct {
 // time the server runs. After that the stored document wins: the admin UI
 // writes it, and an environment variable that silently overrode what the page
 // shows would make the page a lie.
-func New(ctx context.Context, ix *index.Index, envDefaults Config) (*Manager, error) {
+func New(ctx context.Context, ix *index.Index, paths Paths, envDefaults Config) (*Manager, error) {
 	cfg, err := LoadConfig(ctx, ix, envDefaults)
 	if err != nil {
 		return nil, err
 	}
 	return &Manager{
 		index:  ix,
+		paths:  paths,
 		cfg:    cfg,
 		reload: make(chan struct{}, 1),
 	}, nil
 }
+
+// Paths reports where this server backs up from and to. Read-only by
+// construction: the admin page displays them, and there is no setter.
+func (m *Manager) Paths() Paths { return m.paths }
 
 // Config returns the current configuration.
 func (m *Manager) Config() Config {
@@ -181,8 +191,8 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 		m.mu.Unlock()
 	}()
 
-	slog.Info("backup starting", "trigger", trigger, "source", cfg.SourceDir, "dest", cfg.BackupDir)
-	run := execute(ctx, cfg, trigger, time.Now())
+	slog.Info("backup starting", "trigger", trigger, "source", m.paths.Source, "dest", m.paths.Dest)
+	run := execute(ctx, m.paths, cfg, trigger, time.Now())
 
 	if run.Status == StatusSuccess {
 		slog.Info("backup finished", "snapshot", run.Snapshot,
@@ -204,7 +214,10 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 
 // Status is everything the admin page shows on the Backups tab.
 type Status struct {
-	Config    Config `json:"config"`
+	Config Config `json:"config"`
+	// Paths are shown, never offered for editing: they are the container's
+	// mounts. The page renders them as facts rather than as fields.
+	Paths     Paths  `json:"paths"`
 	Health    Health `json:"health"`
 	Problem   string `json:"problem,omitempty"`
 	Running   bool   `json:"running"`
@@ -228,11 +241,12 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 
 	status := Status{
 		Config:    cfg,
-		Health:    checkHealth(cfg),
+		Paths:     m.paths,
+		Health:    checkHealth(m.paths),
 		Running:   running,
 		Snapshots: []Snapshot{},
 	}
-	status.Problem = status.Health.Problem(cfg)
+	status.Problem = status.Health.Problem(m.paths)
 	if running {
 		status.RunningAt = since.UnixMilli()
 		status.RunningTrigger = reason
@@ -248,7 +262,7 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 
 	// A backup directory that cannot be read is already reported by Problem;
 	// an empty snapshot list beside that message is the honest answer.
-	if snapshots, err := ListSnapshots(cfg.normalised().BackupDir); err == nil {
+	if snapshots, err := ListSnapshots(m.paths.normalised().Dest); err == nil {
 		status.Snapshots = Classify(snapshots, cfg)
 	}
 
