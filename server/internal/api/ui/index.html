@@ -130,8 +130,16 @@
   }
   .bar > span {
     display: block; height: 100%; background: var(--accent); border-radius: 999px;
-    transition: width .4s ease;
+    transition: width .4s ease; opacity: .35;
   }
+  /* Two layers, because they answer different questions. The pale one is how
+     far through the files rsync is; the solid one is how much of that it had
+     to copy rather than hard-link. On an incremental run the first fills and
+     the second stays a sliver, which is the run going well. */
+  .bar > span.copied {
+    position: absolute; top: 0; left: 0; opacity: 1;
+  }
+  .bar { position: relative; }
   /* Before rsync has printed anything there is no fraction to draw, only the
      fact that something is happening. */
   .bar.unknown > span {
@@ -282,7 +290,7 @@
           </div>
         </div>
         <div id="backup-progress" hidden>
-          <div class="bar" id="progress-bar"><span></span></div>
+          <div class="bar" id="progress-bar"><span></span><span class="copied"></span></div>
           <div class="muted" id="progress-text"></div>
         </div>
         <p class="muted" style="margin:8px 0 12px">
@@ -988,6 +996,7 @@ function renderProgress(data) {
 
   const bar = $("progress-bar");
   const fill = bar.firstElementChild;
+  const copiedFill = bar.querySelector(".copied");
   const elapsed = data.running_since ? formatDuration(Date.now() - data.running_since) : "";
   const progress = data.progress;
 
@@ -1010,6 +1019,7 @@ function renderProgress(data) {
   if (!progress) {
     bar.classList.add("unknown");
     fill.style.width = "";
+    copiedFill.style.width = "0%";
     $("progress-text").textContent = `Scanning · ${elapsed}`;
     return;
   }
@@ -1022,6 +1032,7 @@ function renderProgress(data) {
   if (!progress.files_total) {
     bar.classList.add("unknown");
     fill.style.width = "";
+    copiedFill.style.width = "0%";
     $("progress-text").textContent =
       `${progress.seen.toLocaleString()} files checked, nothing to copy so far · ${elapsed}`;
     return;
@@ -1029,6 +1040,11 @@ function renderProgress(data) {
 
   bar.classList.remove("unknown");
   fill.style.width = `${progress.percent}%`;
+  // Against the same denominator, so the two layers are comparable. On a run
+  // where everything is a hard link this stays at nothing, which is the honest
+  // picture and the reason the bar is not drawn from it alone.
+  copiedFill.style.width =
+    `${progress.files_total ? Math.min(100, 100 * progress.files_copied / progress.files_total) : 0}%`;
 
   // Both counts, not just the percentage. rsync builds its file list as it
   // goes, so the total climbs during the first seconds and the share can fall
@@ -1044,11 +1060,11 @@ function renderProgress(data) {
       ? `${progress.seen.toLocaleString()} of ${progress.files_total.toLocaleString()} files checked, still finding more`
       : `${progress.seen.toLocaleString()} of ${progress.files_total.toLocaleString()} files checked`,
   ];
-  // What was actually copied, which on an incremental run is a small fraction
-  // of what was checked and is the number worth seeing beside it.
-  if (progress.bytes > 0) {
-    parts.push(`${progress.files_done.toLocaleString()} copied · ${formatBytes(progress.bytes)}`);
-  }
+  // What was actually copied: rsync's transferred-file count, not its check
+  // counter. On an incremental run these diverge completely — everything is
+  // checked and almost nothing is copied — and this is the number that says
+  // what the run cost.
+  parts.push(`${progress.files_copied.toLocaleString()} copied · ${formatBytes(progress.bytes)}`);
   if (elapsed) parts.push(elapsed);
   $("progress-text").textContent = parts.join(" · ");
 }

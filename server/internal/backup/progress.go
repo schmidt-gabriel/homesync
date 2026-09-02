@@ -21,6 +21,12 @@ type Progress struct {
 	FilesDone  int64 `json:"files_done"`
 	FilesTotal int64 `json:"files_total"`
 
+	// FilesCopied is rsync's xfr# — how many files it actually transferred, as
+	// opposed to walked past and found identical. On an incremental backup
+	// this is a tiny fraction of the other two and is the number that says
+	// what the run cost.
+	FilesCopied int64 `json:"files_copied"`
+
 	// Bytes is the running total rsync reports. Deliberately not turned into a
 	// percentage: rsync's own byte percentage is against an estimate, and with
 	// --link-dest most files are skipped instantly, so it reaches 99% in the
@@ -70,6 +76,11 @@ func percentDone(done, total int64) int {
 //	7,920,000  99%  537.28MB/s    0:00:00 (xfr#198, to-chk=2/201)
 //	        0   0%    0.00kB/s    0:00:00 (xfr#0, ir-chk=1036/1098)
 //
+// xfr# is the count of files actually transferred, which is a different number
+// from the check counter beside it and the one nothing was reporting: on an
+// incremental run of 300 files where five had changed, to-chk reached 301/301
+// and xfr# reached 5.
+//
 // Both spellings, and the second one is the one that matters. rsync recurses
 // incrementally: until it has walked the whole tree it says ir-chk and counts
 // against what it has found so far, switching to to-chk once the list is
@@ -77,7 +88,7 @@ func percentDone(done, total int64) int {
 // gave 2572 ir-chk lines to 1149 to-chk — so matching only to-chk left the
 // page reporting "building the file list" through the entire early phase,
 // while rsync was already copying.
-var progressLine = regexp.MustCompile(`^\s*([\d,]+)\s+\d+%.*\b(ir|to)-chk=(\d+)/(\d+)`)
+var progressLine = regexp.MustCompile(`^\s*([\d,]+)\s+\d+%.*xfr#(\d+),\s*(ir|to)-chk=(\d+)/(\d+)`)
 
 func parseProgress(line string) (Progress, bool) {
 	match := progressLine.FindStringSubmatch(line)
@@ -88,24 +99,29 @@ func parseProgress(line string) (Progress, bool) {
 	if err != nil {
 		return Progress{}, false
 	}
-	remaining, err := strconv.ParseInt(match[3], 10, 64)
+	copied, err := strconv.ParseInt(match[2], 10, 64)
 	if err != nil {
 		return Progress{}, false
 	}
-	total, err := strconv.ParseInt(match[4], 10, 64)
+	remaining, err := strconv.ParseInt(match[4], 10, 64)
+	if err != nil {
+		return Progress{}, false
+	}
+	total, err := strconv.ParseInt(match[5], 10, 64)
 	if err != nil {
 		return Progress{}, false
 	}
 	// Percent is left to the caller: it is Seen against FilesTotal, and Seen
 	// is counted by the writer rather than reported on this line.
 	return Progress{
-		FilesDone:  total - remaining,
-		FilesTotal: total,
-		Bytes:      bytesDone,
+		FilesDone:   total - remaining,
+		FilesCopied: copied,
+		FilesTotal:  total,
+		Bytes:       bytesDone,
 		// ir-chk means the total is only what rsync has found so far and will
 		// keep climbing. The fraction is real but provisional, and the page
 		// says so rather than presenting it as a countdown to the end.
-		Scanning:  match[2] == "ir",
+		Scanning:  match[3] == "ir",
 		UpdatedAt: time.Now().UnixMilli(),
 	}, true
 }

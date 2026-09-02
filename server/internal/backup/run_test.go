@@ -542,3 +542,62 @@ func TestCheckedConvergesOnFilesFound(t *testing.T) {
 			last.Seen, last.FilesTotal, ratio)
 	}
 }
+
+// The three numbers are different questions, and an incremental backup is
+// where that stops being academic: everything is found, everything is checked,
+// and almost nothing is copied. A bar drawn from the copied count would sit
+// near zero for a run that is nearly finished.
+func TestIncrementalRunSeparatesCopiedFromChecked(t *testing.T) {
+	if !progressSupport() {
+		t.Skip("this rsync cannot report progress (openrsync)")
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	dest := filepath.Join(dir, "backup")
+	mustMkdir(t, source)
+	mustMkdir(t, dest)
+	mustWrite(t, filepath.Join(dest, ".homesync_backup_disk"), "")
+
+	const total = 300
+	for f := range total {
+		mustWrite(t, filepath.Join(source, fmt.Sprintf("f%03d.bin", f)), strings.Repeat("x", 1000))
+	}
+
+	paths := Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"}
+	day := time.Date(2026, 3, 1, 3, 0, 0, 0, time.UTC)
+	if run := execute(context.Background(), paths, DefaultConfig(), TriggerManual, day, nil); run.Status != StatusSuccess {
+		t.Fatalf("the first run failed: %s", run.Error)
+	}
+
+	// Five files change; the other 295 will be hard links.
+	const changed = 5
+	for f := range changed {
+		mustWrite(t, filepath.Join(source, fmt.Sprintf("f%03d.bin", f)), strings.Repeat("y", 2000))
+	}
+
+	var mu sync.Mutex
+	var last Progress
+	run := execute(context.Background(), paths, DefaultConfig(), TriggerManual,
+		day.AddDate(0, 0, 1), func(p Progress) {
+			mu.Lock()
+			last = p
+			mu.Unlock()
+		})
+	if run.Status != StatusSuccess {
+		t.Fatalf("the second run failed: %s", run.Error)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if last.FilesCopied != changed {
+		t.Errorf("copied = %d, want %d", last.FilesCopied, changed)
+	}
+	if last.FilesTotal < total {
+		t.Errorf("found = %d, want at least %d", last.FilesTotal, total)
+	}
+	// The point: checked ran to the end while copied stayed at five.
+	if last.Seen < total {
+		t.Errorf("checked = %d, want at least %d", last.Seen, total)
+	}
+}

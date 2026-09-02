@@ -21,6 +21,12 @@ func TestParseProgress(t *testing.T) {
 	if got.FilesDone != 199 || got.FilesTotal != 201 {
 		t.Errorf("files = %d/%d, want 199/201", got.FilesDone, got.FilesTotal)
 	}
+	// xfr#198: the files actually transferred, which is neither the checked
+	// count nor the total and was not being read at all.
+	if got.FilesCopied != 198 {
+		t.Errorf("FilesCopied = %d, want 198", got.FilesCopied)
+	}
+
 	// Percent is not this function's to set: it is files checked against files
 	// found, and the checked count is kept by the writer across lines.
 	if got.Percent != 0 {
@@ -71,6 +77,9 @@ func TestParseProgressReadsIncrementalRecursion(t *testing.T) {
 	}
 	if got.FilesDone != 63 || got.FilesTotal != 1159 {
 		t.Errorf("files = %d/%d, want 63/1159", got.FilesDone, got.FilesTotal)
+	}
+	if got.FilesCopied != 1 {
+		t.Errorf("FilesCopied = %d, want 1", got.FilesCopied)
 	}
 	if !got.Scanning {
 		t.Error("an ir-chk line was not marked as still scanning")

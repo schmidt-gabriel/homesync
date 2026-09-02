@@ -139,7 +139,12 @@ backup of something. To change what is copied, change the mount. What the page
 does own is the policy: whether the job runs, when, and how much it keeps.
 
 While a run is going the page shows how far it has got: a bar of files checked
-against files found, with both counts beside it, and a Stop button. Stopping
+against files found, with the files actually copied drawn solid over it, the
+counts beside it, and a Stop button. The two layers answer different questions,
+and on an incremental backup they diverge completely — a pass over 9,000 files
+where twelve had changed checked all 9,000 and copied twelve, which is why the
+bar is not drawn from the copied count alone: it would have read 0.13% for a
+run that was nearly done. Stopping
 deletes the partly-written snapshot — an incomplete one sitting beside the
 finished ones would restore as though it were a backup — and leaves every
 earlier snapshot alone. The list of past runs can be cleared, which removes
