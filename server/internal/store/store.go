@@ -159,7 +159,9 @@ func (s *Store) Write(rel string, r io.Reader) (WriteResult, error) {
 	if err := tmp.Close(); err != nil {
 		return WriteResult{}, err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	// The group mode becomes the ACL mask on Linux. Keep it writable so a
+	// default ACL can grant the SMB user write access after the atomic rename.
+	if err := os.Chmod(tmpName, 0o664); err != nil {
 		return WriteResult{}, err
 	}
 	if err := os.Rename(tmpName, abs); err != nil {
