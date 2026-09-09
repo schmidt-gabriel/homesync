@@ -88,6 +88,24 @@ func TestWriteReportsPlaintextSizeAndHash(t *testing.T) {
 	}
 }
 
+func TestWriteKeepsACLWriteMaskOpen(t *testing.T) {
+	s, err := New(t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	if _, err := s.Write("notes.txt", strings.NewReader("contents")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(s.Root(), "notes.txt"))
+	if err != nil {
+		t.Fatalf("stat written file: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o664); got != want {
+		t.Fatalf("written file mode = %04o, want %04o so a default ACL write mask survives", got, want)
+	}
+}
+
 // Turning encryption on must not strand what is already there. Both forms have
 // to be readable through the same store, because that is the state every
 // existing server is in the moment the key is set.
