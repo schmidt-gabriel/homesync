@@ -164,3 +164,44 @@ func TestPutAndPurge(t *testing.T) {
 		}
 	})
 }
+
+func TestRecreatesMissingTrash(t *testing.T) {
+	for _, operation := range []string{"purge", "put"} {
+		t.Run(operation, func(t *testing.T) {
+			root := t.TempDir()
+			tr, err := New(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(tr.Dir()); err != nil {
+				t.Fatal(err)
+			}
+			if operation == "purge" {
+				removed, err := tr.Purge(time.Now())
+				if err != nil || removed != 0 {
+					t.Fatalf("Purge = %d, %v; want 0, nil", removed, err)
+				}
+			} else {
+				src := filepath.Join(root, "file.txt")
+				if err := os.WriteFile(src, []byte("content"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				id, err := tr.Put(src, "file.txt", time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				content, err := os.ReadFile(tr.AbsPath(id))
+				if err != nil || string(content) != "content" {
+					t.Fatalf("stored content = %q, %v", content, err)
+				}
+			}
+			info, err := os.Stat(tr.Dir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.IsDir() {
+				t.Fatal("trash is not a directory")
+			}
+		})
+	}
+}

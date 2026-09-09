@@ -74,6 +74,9 @@ func decodeID(id string) (time.Time, string, bool) {
 // It is a rename, not a copy, so discarding a large file costs nothing and
 // cannot half-succeed.
 func (t *Trash) Put(absPath, relPath string, when time.Time) (string, error) {
+	if err := os.MkdirAll(t.dir, 0o755); err != nil {
+		return "", fmt.Errorf("create trash: %w", err)
+	}
 	id := encodeID(when, relPath)
 	dest := filepath.Join(t.dir, id)
 
@@ -94,6 +97,9 @@ func (t *Trash) Put(absPath, relPath string, when time.Time) (string, error) {
 
 // List returns the trash contents, newest first.
 func (t *Trash) List() ([]Item, error) {
+	if err := os.MkdirAll(t.dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create trash: %w", err)
+	}
 	entries, err := os.ReadDir(t.dir)
 	if err != nil {
 		return nil, err
