@@ -77,6 +77,7 @@
   }
   button.ghost:hover { color: var(--text); }
   button.ghost.danger { color: var(--danger); border-color: var(--danger); }
+  button.ghost:disabled { opacity: .45; cursor: not-allowed; }
   input[type=text], input[type=password], textarea {
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 7px; padding: 8px 11px; font-size: 14px; font-family: inherit; width: 100%;
@@ -289,10 +290,12 @@
           One dated folder per run, each a complete copy you can browse or restore from.
           Unchanged files are hard links to the previous snapshot, so only what changed
           takes new space. A snapshot no tier is holding is deleted by the next run.
+          <em>Frees</em> is what deleting a snapshot gives back — only what no other snapshot
+          links to. <em>Total</em> is everything it holds, most of it shared.
         </p>
         <div class="table-scroll">
           <table>
-            <thead><tr><th>Snapshot</th><th>Kept by</th><th>Written</th></tr></thead>
+            <thead><tr><th>Snapshot</th><th>Kept by</th><th>Written</th><th class="num">Frees</th><th class="num">Total</th><th></th></tr></thead>
             <tbody id="snapshot-rows"></tbody>
           </table>
         </div>
@@ -938,7 +941,7 @@ function renderBackups(data) {
   if (!formTouched) fillBackupForm(config);
 
   renderPaths(data.paths, data.health);
-  renderSnapshots(data.snapshots);
+  renderSnapshots(data.snapshots, data.running);
   renderRuns(data.history);
 }
 
@@ -1054,14 +1057,14 @@ function renderProgress(data) {
   $("progress-text").textContent = parts.join(" · ");
 }
 
-function renderSnapshots(snapshots) {
+function renderSnapshots(snapshots, running) {
   const host = $("snapshot-rows");
   host.replaceChildren();
 
   if (snapshots.length === 0) {
     const tr = document.createElement("tr");
     const td = cell("No snapshots on the backup disk yet.", "empty");
-    td.colSpan = 3;
+    td.colSpan = 6;
     tr.append(td);
     host.append(tr);
     return;
@@ -1083,8 +1086,41 @@ function renderSnapshots(snapshots) {
       badge.textContent = "removed by the next run";
       tiers.append(badge);
     }
-    tr.append(cell(snapshot.name, "path"), tiers, cell(formatTime(snapshot.mtime)));
+    // Null until the server has walked it, which happens in the background
+    // after every run and delete.
+    const measured = snapshot.size;
+    const frees = cell(measured ? formatBytes(measured.unique) : "measuring…", "num");
+    const total = cell(measured ? formatBytes(measured.total) : "", "num");
+
+    const actionCell = document.createElement("td");
+    const remove = document.createElement("button");
+    remove.className = "ghost danger";
+    remove.textContent = "Delete";
+    // The server refuses too; disabled here so the button does not offer
+    // something that is about to fail.
+    remove.disabled = running;
+    if (running) remove.title = "Wait for the backup that is running to finish";
+    remove.addEventListener("click", () => deleteSnapshot(snapshot));
+    actionCell.append(remove);
+
+    tr.append(cell(snapshot.name, "path"), tiers, cell(formatTime(snapshot.mtime)), frees, total, actionCell);
     host.append(tr);
+  }
+}
+
+async function deleteSnapshot(snapshot) {
+  const frees = snapshot.size ? formatBytes(snapshot.size.unique) : "an unknown amount";
+  if (!confirm(
+    `Delete the snapshot ${snapshot.name}?\n\n` +
+    `This frees ${frees}. Files it shares with other snapshots stay in those; ` +
+    "anything that exists only in this one is gone for good. It cannot be undone.")) {
+    return;
+  }
+  try {
+    await api(`/admin/api/backup/snapshots/${encodeURIComponent(snapshot.name)}`, { method: "DELETE" });
+    loadBackups();
+  } catch (err) {
+    alert(err.message);
   }
 }
 

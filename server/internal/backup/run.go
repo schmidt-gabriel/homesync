@@ -56,7 +56,6 @@ type Health struct {
 	BackupDirExists  bool       `json:"backup_dir_exists"`
 	MarkerPresent    bool       `json:"marker_present"`
 	Disk             *DiskUsage `json:"disk"`
-	Latest           string     `json:"latest"`
 }
 
 // Problem returns the reason a run would refuse to start, or "" when it would
@@ -71,7 +70,7 @@ func (h Health) Problem(paths Paths) string {
 		return fmt.Sprintf("the source %s cannot be read — the server runs unprivileged, "+
 			"so a directory owned by another user needs the container to run as root", paths.Source)
 	case h.SourceEmpty:
-		// A snapshot of an empty source would become "latest", and tomorrow's
+		// A snapshot of an empty source would become the newest, and tomorrow's
 		// --link-dest would then have nothing to link against: a source that
 		// disappeared would quietly cost a full copy and hide the problem.
 		return fmt.Sprintf("the source %s is empty — refusing to snapshot nothing", paths.Source)
@@ -113,9 +112,6 @@ func checkHealth(paths Paths) Health {
 			h.MarkerPresent = true
 		}
 		h.Disk = diskUsage(paths.Dest)
-		if target, err := os.Readlink(filepath.Join(paths.Dest, "latest")); err == nil {
-			h.Latest = target
-		}
 	}
 
 	return h
@@ -210,9 +206,9 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 		// heartbeat. The lines are counted and dropped, never buffered.
 		args = append(args, "--info=progress2,name2", "--outbuf=L")
 	}
-	// The newest snapshot that is not the one being written. Deliberately not
-	// the "latest" symlink: a second run on the same day would find it already
-	// pointing at today's directory and hard-link the snapshot against itself.
+	// The newest snapshot that is not the one being written, not simply the
+	// newest: a second run on the same day would find today's directory and
+	// hard-link the snapshot against itself.
 	if previous := previousSnapshot(snapshots, name); previous != "" {
 		args = append(args, "--link-dest="+filepath.Join(paths.Dest, previous))
 	}
@@ -260,13 +256,8 @@ func execute(ctx context.Context, paths Paths, cfg Config, trigger string, now t
 		}
 	}
 
-	// Relative, so the link resolves both inside the container and on the host
-	// where the disk is actually mounted.
-	link := filepath.Join(paths.Dest, "latest")
-	if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
-		run.Warning = appendWarning(run.Warning, "could not replace the 'latest' link: "+err.Error())
-	} else if err := os.Symlink(name, link); err != nil {
-		run.Warning = appendWarning(run.Warning, "could not create the 'latest' link: "+err.Error())
+	if err := removeLatestLink(paths.Dest); err != nil {
+		run.Warning = appendWarning(run.Warning, "could not remove the old 'latest' link: "+err.Error())
 	}
 
 	// Re-read: the snapshot just written has to be part of what retention

@@ -104,6 +104,27 @@ func (s *Server) handleAdminBackupClearHistory(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
+// handleAdminBackupDeleteSnapshot removes one snapshot ahead of retention, for
+// when the disk is filling up and the person looking at the sizes knows which
+// one they can do without. Admin only, like emptying the trash.
+func (s *Server) handleAdminBackupDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	switch err := s.backups.DeleteSnapshot(name); {
+	case err == nil:
+		slog.Info("backup snapshot deleted", "snapshot", name)
+		writeJSON(w, http.StatusOK, map[string]any{"removed": name})
+	case errors.Is(err, backup.ErrInvalidSnapshot):
+		writeError(w, http.StatusBadRequest, "invalid_snapshot", "snapshot names are dates, YYYY-MM-DD")
+	case errors.Is(err, backup.ErrSnapshotNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "no snapshot called "+name)
+	case errors.Is(err, backup.ErrBusy):
+		writeError(w, http.StatusConflict, "already_running", err.Error())
+	default:
+		slog.Error("cannot delete backup snapshot", "snapshot", name, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal", "cannot delete the snapshot: "+err.Error())
+	}
+}
+
 func (s *Server) handleAdminBackupRun(w http.ResponseWriter, r *http.Request) {
 	// Checked before starting so the page can say what is wrong, rather than
 	// the operator watching for a run that fails a second later. A run is

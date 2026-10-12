@@ -123,6 +123,7 @@ func (s *Server) adminRoutes() {
 	s.mux.HandleFunc("POST /admin/api/backup/run", s.requireAdmin(s.handleAdminBackupRun))
 	s.mux.HandleFunc("POST /admin/api/backup/stop", s.requireAdmin(s.handleAdminBackupStop))
 	s.mux.HandleFunc("DELETE /admin/api/backup/history", s.requireAdmin(s.handleAdminBackupClearHistory))
+	s.mux.HandleFunc("DELETE /admin/api/backup/snapshots/{name}", s.requireAdmin(s.handleAdminBackupDeleteSnapshot))
 
 	ui, err := fs.Sub(uiFiles, "ui")
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -38,6 +39,21 @@ type Manager struct {
 	runReason string
 	baseCtx   context.Context
 
+	// disk is held by whatever writes to the backup directory — a run, or a
+	// snapshot being deleted — so neither pulls a directory out from under the
+	// other: a run's --link-dest half-deleted, or a delete of the snapshot
+	// rsync is writing.
+	disk sync.Mutex
+
+	// sizes caches what each snapshot measured. Walking every snapshot is
+	// minutes on a large tree and the page polls, so it is measured once in
+	// the background and again only after something changes the link counts:
+	// a run adds a link to every unchanged file, a delete removes one.
+	sizes      map[string]SnapshotSize
+	sizesStale bool
+	sizesGen   int
+	measuring  bool
+
 	// reload wakes the scheduler when the configuration changes, so a new
 	// schedule takes effect immediately instead of after the pending timer.
 	reload chan struct{}
@@ -53,10 +69,11 @@ func New(ctx context.Context, ix *index.Index, paths Paths, envDefaults Config) 
 		return nil, err
 	}
 	return &Manager{
-		index:  ix,
-		paths:  paths,
-		cfg:    cfg,
-		reload: make(chan struct{}, 1),
+		index:      ix,
+		paths:      paths,
+		cfg:        cfg,
+		reload:     make(chan struct{}, 1),
+		sizesStale: true,
 	}, nil
 }
 
@@ -202,7 +219,13 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 		m.progress = nil
 		m.cancelRun = nil
 		m.mu.Unlock()
+		m.invalidateSizes()
 	}()
+
+	// Only a delete can be holding this, and a delete is short; the run waits
+	// for it rather than being skipped.
+	m.disk.Lock()
+	defer m.disk.Unlock()
 
 	slog.Info("backup starting", "trigger", trigger, "source", m.paths.Source, "dest", m.paths.Dest)
 	// The last successful run's file count, which is what the progress bar is
@@ -258,6 +281,79 @@ func (m *Manager) Stop() bool {
 	}
 	cancel()
 	return true
+}
+
+// ErrBusy is a delete asked for while the backup directory is being written.
+var ErrBusy = errors.New("a backup is running; delete the snapshot once it has finished")
+
+// DeleteSnapshot removes one snapshot by name. It refuses while a run is going
+// rather than waiting for one that can take hours, and the run in turn cannot
+// start until the delete is done.
+func (m *Manager) DeleteSnapshot(name string) error {
+	if !m.disk.TryLock() {
+		return ErrBusy
+	}
+	defer m.disk.Unlock()
+
+	err := deleteSnapshot(m.paths.normalised().Dest, name)
+	if err == nil {
+		m.invalidateSizes()
+	}
+	return err
+}
+
+// invalidateSizes marks every cached size as out of date. The old numbers stay
+// on the page until new ones arrive: slightly stale is more use than blank.
+func (m *Manager) invalidateSizes() {
+	m.mu.Lock()
+	m.sizesStale = true
+	m.sizesGen++
+	m.mu.Unlock()
+}
+
+// attachSizes fills in what has been measured and starts a measurement when
+// the cache is out of date. Never while a run is going: rsync is changing the
+// link counts as it goes, so the numbers would be wrong before they arrived.
+// Called with m.mu held.
+func (m *Manager) attachSizes(snapshots []Snapshot, running bool) {
+	for i := range snapshots {
+		if size, ok := m.sizes[snapshots[i].Name]; ok {
+			snapshots[i].Size = &size
+		}
+	}
+	if !m.sizesStale || m.measuring || running {
+		return
+	}
+	names := make([]string, len(snapshots))
+	for i, snapshot := range snapshots {
+		names[i] = snapshot.Name
+	}
+	m.measuring = true
+	go m.measureSizes(names, m.sizesGen)
+}
+
+func (m *Manager) measureSizes(names []string, gen int) {
+	dest := m.paths.normalised().Dest
+	sizes := make(map[string]SnapshotSize, len(names))
+	for _, name := range names {
+		size, err := measureSnapshot(filepath.Join(dest, name))
+		if err != nil {
+			// Deleted by retention or by hand since it was listed, or a file
+			// that cannot be read: leave it unmeasured rather than show a
+			// number that counted half of it.
+			slog.Warn("cannot measure snapshot", "snapshot", name, "err", err)
+			continue
+		}
+		sizes[name] = size
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.measuring = false
+	m.sizes = sizes
+	// Anything that changed the disk while this walked has already asked for
+	// another pass; these numbers are shown until it lands.
+	m.sizesStale = gen != m.sizesGen
 }
 
 // ClearHistory empties the record of past runs, returning how many were
@@ -325,6 +421,9 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	// an empty snapshot list beside that message is the honest answer.
 	if snapshots, err := ListSnapshots(m.paths.normalised().Dest); err == nil {
 		status.Snapshots = Classify(snapshots, cfg)
+		m.mu.Lock()
+		m.attachSizes(status.Snapshots, running)
+		m.mu.Unlock()
 	}
 
 	history, err := listRuns(ctx, m.index.DB(), historyLimit)

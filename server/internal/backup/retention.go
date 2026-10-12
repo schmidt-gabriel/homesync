@@ -10,8 +10,8 @@ import (
 )
 
 // snapshotName is the only directory shape treated as a snapshot. Anything
-// else in the backup directory — the marker file, the "latest" symlink, a
-// folder someone put there — is left entirely alone, by listing and by
+// else in the backup directory — the marker file, a folder someone put
+// there — is left entirely alone, by listing and by
 // retention alike.
 var snapshotName = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
@@ -27,6 +27,9 @@ type Snapshot struct {
 	// happens rather than explaining afterwards.
 	Tiers []string `json:"tiers"`
 	Kept  bool     `json:"kept"`
+	// Size is null until it has been measured, which takes a walk of the
+	// whole snapshot and happens in the background.
+	Size *SnapshotSize `json:"size"`
 }
 
 // ListSnapshots returns the snapshot directories in dir, newest first. The
