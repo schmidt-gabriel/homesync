@@ -214,13 +214,52 @@ func TestExecuteTakesIncrementalSnapshots(t *testing.T) {
 		t.Error("a file deleted from the source vanished from the old snapshot too")
 	}
 
-	target, err := os.Readlink(filepath.Join(dest, "latest"))
-	if err != nil {
-		t.Fatalf("no 'latest' link: %v", err)
+}
+
+// Earlier versions kept a "latest" symlink beside the snapshots. It showed up
+// on the disk as one more folder that was not a backup, so a run removes one
+// it finds and does not make another.
+func TestExecuteRemovesTheLatestLink(t *testing.T) {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync is not installed")
 	}
-	// Relative, so it resolves on the host as well as inside the container.
-	if target != "2026-01-02" {
-		t.Errorf("'latest' points at %q", target)
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	dest := filepath.Join(dir, "backup")
+	mustMkdir(t, source)
+	mustMkdir(t, filepath.Join(dest, "2026-01-01"))
+	mustWrite(t, filepath.Join(dest, ".homesync_backup_disk"), "")
+	mustWrite(t, filepath.Join(source, "a.txt"), "content")
+	if err := os.Symlink("2026-01-01", filepath.Join(dest, "latest")); err != nil {
+		t.Fatal(err)
+	}
+
+	paths := Paths{Source: source, Dest: dest, Marker: ".homesync_backup_disk"}
+	day := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
+	if run := execute(context.Background(), paths, DefaultConfig(), TriggerManual, day, 0, nil); run.Status != StatusSuccess {
+		t.Fatalf("run failed: %s", run.Error)
+	}
+
+	if _, err := os.Lstat(filepath.Join(dest, "latest")); !os.IsNotExist(err) {
+		t.Errorf("'latest' is still in the backup directory (err = %v)", err)
+	}
+	// The link went, not what it pointed at.
+	if _, err := os.Stat(filepath.Join(dest, "2026-01-01")); err != nil {
+		t.Errorf("removing the link took the snapshot with it: %v", err)
+	}
+}
+
+// A directory called "latest" is not ours to remove: only the link this code
+// used to make is.
+func TestRemoveLatestLinkLeavesADirectoryAlone(t *testing.T) {
+	dest := t.TempDir()
+	mustMkdir(t, filepath.Join(dest, "latest"))
+	if err := removeLatestLink(dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "latest")); err != nil {
+		t.Errorf("a real directory named latest was removed: %v", err)
 	}
 }
 

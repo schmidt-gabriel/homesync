@@ -133,10 +133,18 @@ read it.
 Two more things there are load-bearing. Retention counts *distinct* weeks and
 months, not the newest N snapshots — count snapshots and a run of dailies fills
 the weekly quota from one week and everything older is deleted. And the
-`--link-dest` target is chosen as the newest snapshot older than today's,
-deliberately not the `latest` symlink: a second run on the same day would find
-`latest` already pointing at the directory being written and hard-link it
-against itself.
+`--link-dest` target is chosen as the newest snapshot older than today's, not
+simply the newest: a second run on the same day would find the directory being
+written and hard-link it against itself. There is no `latest` symlink any more;
+a run removes one left by an older version.
+
+Snapshot sizes are two numbers because hard links make either one misleading
+alone: *total* is everything a snapshot reaches, *unique* (files with one link)
+is what deleting it frees. Measuring walks every snapshot, so the manager
+caches the result, measures in the background, never while a run is going, and
+throws the cache away after every run or delete — both change link counts in
+snapshots other than the one touched. Deleting a snapshot and running a backup
+share one lock, so neither removes a directory the other is using.
 
 **The progress bar counts files checked against the previous run's total, and
 each half of that was arrived at by discarding something that looked right.**
