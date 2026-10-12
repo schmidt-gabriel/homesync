@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"sync"
 	"time"
@@ -45,14 +46,14 @@ type Manager struct {
 	// rsync is writing.
 	disk sync.Mutex
 
-	// sizes caches what each snapshot measured. Walking every snapshot is
-	// minutes on a large tree and the page polls, so it is measured once in
-	// the background and again only after something changes the link counts:
-	// a run adds a link to every unchanged file, a delete removes one.
-	sizes      map[string]SnapshotSize
-	sizesStale bool
-	sizesGen   int
-	measuring  bool
+	// sizes is what each snapshot measured, kept in the meta table so a
+	// restart does not start over: walking a snapshot of a large tree takes
+	// minutes, and measuring on page load left the page saying "measuring…"
+	// after every restart. pending is what a run or a delete has since made
+	// out of date, walked one at a time by a single background worker.
+	sizes     map[string]SnapshotSize
+	pending   map[string]bool
+	measuring bool
 
 	// reload wakes the scheduler when the configuration changes, so a new
 	// schedule takes effect immediately instead of after the pending timer.
@@ -68,12 +69,20 @@ func New(ctx context.Context, ix *index.Index, paths Paths, envDefaults Config) 
 	if err != nil {
 		return nil, err
 	}
+	sizes, err := loadSizes(ctx, ix)
+	if err != nil {
+		// Only numbers on a page; they are measured again rather than
+		// stopping the server.
+		slog.Warn("cannot read stored snapshot sizes; measuring again", "err", err)
+		sizes = map[string]SnapshotSize{}
+	}
 	return &Manager{
-		index:      ix,
-		paths:      paths,
-		cfg:        cfg,
-		reload:     make(chan struct{}, 1),
-		sizesStale: true,
+		index:   ix,
+		paths:   paths,
+		cfg:     cfg,
+		reload:  make(chan struct{}, 1),
+		sizes:   sizes,
+		pending: map[string]bool{},
 	}, nil
 }
 
@@ -118,6 +127,9 @@ func (m *Manager) Run(ctx context.Context) {
 	m.mu.Lock()
 	m.baseCtx = ctx
 	m.mu.Unlock()
+	// Whatever has never been measured: the first start after an upgrade, or
+	// a snapshot copied onto the disk by hand.
+	m.queueSizes()
 
 	for {
 		cfg := m.Config()
@@ -212,6 +224,7 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 	m.cancelRun = cancel
 	m.mu.Unlock()
 
+	var run Run
 	defer func() {
 		cancel()
 		m.mu.Lock()
@@ -219,7 +232,13 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 		m.progress = nil
 		m.cancelRun = nil
 		m.mu.Unlock()
-		m.invalidateSizes()
+		// A cancelled run removed what it wrote, and that counts as a change
+		// too; sizesToMeasure only looks at what is on the disk.
+		var touched []string
+		if run.Snapshot != "" {
+			touched = append(touched, run.Snapshot)
+		}
+		m.queueSizes(append(touched, run.Pruned...)...)
 	}()
 
 	// Only a delete can be holding this, and a delete is short; the run waits
@@ -235,7 +254,7 @@ func (m *Manager) runOnce(ctx context.Context, trigger string) (Run, error) {
 		slog.Warn("cannot read the previous run's file count", "err", err)
 	}
 
-	run := execute(runCtx, m.paths, cfg, trigger, time.Now(), expected, m.setProgress)
+	run = execute(runCtx, m.paths, cfg, trigger, time.Now(), expected, m.setProgress)
 
 	switch run.Status {
 	case StatusSuccess:
@@ -297,63 +316,93 @@ func (m *Manager) DeleteSnapshot(name string) error {
 
 	err := deleteSnapshot(m.paths.normalised().Dest, name)
 	if err == nil {
-		m.invalidateSizes()
+		m.queueSizes(name)
 	}
 	return err
 }
 
-// invalidateSizes marks every cached size as out of date. The old numbers stay
-// on the page until new ones arrive: slightly stale is more use than blank.
-func (m *Manager) invalidateSizes() {
-	m.mu.Lock()
-	m.sizesStale = true
-	m.sizesGen++
-	m.mu.Unlock()
-}
-
-// attachSizes fills in what has been measured and starts a measurement when
-// the cache is out of date. Never while a run is going: rsync is changing the
-// link counts as it goes, so the numbers would be wrong before they arrived.
-// Called with m.mu held.
-func (m *Manager) attachSizes(snapshots []Snapshot, running bool) {
-	for i := range snapshots {
-		if size, ok := m.sizes[snapshots[i].Name]; ok {
-			snapshots[i].Size = &size
-		}
+// queueSizes adds to the work list whatever touched has made out of date,
+// plus anything never measured, and starts the worker if it is idle.
+func (m *Manager) queueSizes(touched ...string) {
+	snapshots, err := ListSnapshots(m.paths.normalised().Dest)
+	if err != nil {
+		return // the disk is not there; Status already says so
 	}
-	if !m.sizesStale || m.measuring || running {
-		return
-	}
-	names := make([]string, len(snapshots))
+	current := make([]string, len(snapshots))
+	onDisk := map[string]bool{}
 	for i, snapshot := range snapshots {
-		names[i] = snapshot.Name
-	}
-	m.measuring = true
-	go m.measureSizes(names, m.sizesGen)
-}
-
-func (m *Manager) measureSizes(names []string, gen int) {
-	dest := m.paths.normalised().Dest
-	sizes := make(map[string]SnapshotSize, len(names))
-	for _, name := range names {
-		size, err := measureSnapshot(filepath.Join(dest, name))
-		if err != nil {
-			// Deleted by retention or by hand since it was listed, or a file
-			// that cannot be read: leave it unmeasured rather than show a
-			// number that counted half of it.
-			slog.Warn("cannot measure snapshot", "snapshot", name, "err", err)
-			continue
-		}
-		sizes[name] = size
+		current[i] = snapshot.Name
+		onDisk[snapshot.Name] = true
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.measuring = false
-	m.sizes = sizes
-	// Anything that changed the disk while this walked has already asked for
-	// another pass; these numbers are shown until it lands.
-	m.sizesStale = gen != m.sizesGen
+	for name := range m.sizes {
+		if !onDisk[name] {
+			delete(m.sizes, name)
+		}
+	}
+	for _, name := range sizesToMeasure(current, m.sizes, touched) {
+		m.pending[name] = true
+	}
+	m.startMeasuring()
+}
+
+// startMeasuring starts the worker when there is work and nothing in the way.
+// Never during a run: rsync changes link counts as it goes, so the numbers
+// would be wrong before they were stored. The end of the run calls back here.
+// Called with m.mu held.
+func (m *Manager) startMeasuring() {
+	if m.measuring || m.running || len(m.pending) == 0 {
+		return
+	}
+	m.measuring = true
+	go m.measureSizes()
+}
+
+func (m *Manager) measureSizes() {
+	dest := m.paths.normalised().Dest
+	for {
+		m.mu.Lock()
+		// Checked between snapshots too, so a run that starts mid-way pauses
+		// the work rather than racing it.
+		if m.running || len(m.pending) == 0 {
+			m.measuring = false
+			m.mu.Unlock()
+			return
+		}
+		// Newest first: that is where the page looks, and where a run left
+		// something unmeasured.
+		var name string
+		for candidate := range m.pending {
+			if candidate > name {
+				name = candidate
+			}
+		}
+		delete(m.pending, name)
+		m.mu.Unlock()
+
+		size, err := measureSnapshot(filepath.Join(dest, name))
+		if err != nil {
+			// Deleted since it was queued: nothing to store.
+			slog.Warn("cannot measure snapshot", "snapshot", name, "err", err)
+			continue
+		}
+		if size.Unreadable > 0 {
+			slog.Info("snapshot measured with unreadable entries", "snapshot", name, "unreadable", size.Unreadable)
+		}
+
+		m.mu.Lock()
+		m.sizes[name] = size
+		stored := maps.Clone(m.sizes)
+		m.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := saveSizes(ctx, m.index, stored); err != nil {
+			slog.Warn("cannot store snapshot sizes", "err", err)
+		}
+		cancel()
+	}
 }
 
 // ClearHistory empties the record of past runs, returning how many were
@@ -422,7 +471,13 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if snapshots, err := ListSnapshots(m.paths.normalised().Dest); err == nil {
 		status.Snapshots = Classify(snapshots, cfg)
 		m.mu.Lock()
-		m.attachSizes(status.Snapshots, running)
+		for i := range status.Snapshots {
+			name := status.Snapshots[i].Name
+			if size, ok := m.sizes[name]; ok {
+				status.Snapshots[i].Size = &size
+			}
+			status.Snapshots[i].Measuring = m.pending[name]
+		}
 		m.mu.Unlock()
 	}
 
