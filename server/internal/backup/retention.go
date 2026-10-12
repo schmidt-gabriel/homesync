@@ -20,8 +20,10 @@ const snapshotLayout = "2006-01-02"
 
 // Snapshot is one dated directory on the backup disk.
 type Snapshot struct {
-	Name  string `json:"name"`
-	MTime int64  `json:"mtime"` // unix milliseconds
+	Name string `json:"name"`
+	// WrittenAt is when the run that wrote it finished, from the history, in
+	// unix milliseconds; zero when no run in the history wrote it.
+	WrittenAt int64 `json:"written_at"`
 	// Tiers are the retention rules keeping it: any of daily, weekly, monthly.
 	// Empty means the next run deletes it, which is worth showing before it
 	// happens rather than explaining afterwards.
@@ -49,11 +51,7 @@ func ListSnapshots(dir string) ([]Snapshot, error) {
 		}
 		// IsDir on a DirEntry from ReadDir does not follow symlinks, so a link
 		// named like a snapshot is skipped rather than descended into.
-		snapshot := Snapshot{Name: entry.Name()}
-		if info, err := entry.Info(); err == nil {
-			snapshot.MTime = info.ModTime().UnixMilli()
-		}
-		snapshots = append(snapshots, snapshot)
+		snapshots = append(snapshots, Snapshot{Name: entry.Name()})
 	}
 
 	sort.Slice(snapshots, func(i, j int) bool {

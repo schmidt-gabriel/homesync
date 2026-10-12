@@ -485,6 +485,13 @@ func (m *Manager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	written, err := writtenTimes(ctx, m.index.DB())
+	if err != nil {
+		return Status{}, err
+	}
+	for i := range status.Snapshots {
+		status.Snapshots[i].WrittenAt = written[status.Snapshots[i].Name]
+	}
 	status.History = history
 	status.Metrics = buildMetrics(history)
 	return status, nil

@@ -1,11 +1,14 @@
 package backup
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/schmidt-gabriel/homesync/server/internal/index"
 )
 
 // What deleting a snapshot frees is only what no other snapshot links to.
@@ -174,5 +177,42 @@ func TestSizesToMeasure(t *testing.T) {
 		if strings.Join(got, ",") != strings.Join(c.want, ",") {
 			t.Errorf("%s: measured %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+// A snapshot's folder carries the source's modification time, because rsync
+// -a copies it, so two snapshots of an unchanged source read as written at
+// the same moment. When a snapshot was written is the run that wrote it.
+func TestWrittenTimesComeFromTheRunThatWroteTheSnapshot(t *testing.T) {
+	ix, err := index.Open(filepath.Join(t.TempDir(), "homesync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ix.Close() })
+	ctx := context.Background()
+
+	for _, run := range []Run{
+		{FinishedAt: 1000, Status: StatusSuccess, Snapshot: "2026-01-01"},
+		// A second run on the same day rewrites the snapshot: the later one
+		// is when its content is from.
+		{FinishedAt: 2000, Status: StatusSuccess, Snapshot: "2026-01-02"},
+		{FinishedAt: 3000, Status: StatusSuccess, Snapshot: "2026-01-02"},
+		// Neither of these wrote anything that is on the disk.
+		{FinishedAt: 4000, Status: StatusFailed, Snapshot: "2026-01-02"},
+		{FinishedAt: 5000, Status: StatusCancelled, Snapshot: "2026-01-03"},
+	} {
+		run.Pruned = []string{}
+		if err := recordRun(ctx, ix.DB(), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := writtenTimes(ctx, ix.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int64{"2026-01-01": 1000, "2026-01-02": 3000}
+	if len(got) != len(want) || got["2026-01-01"] != 1000 || got["2026-01-02"] != 3000 {
+		t.Errorf("writtenTimes = %v, want %v", got, want)
 	}
 }

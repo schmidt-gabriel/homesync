@@ -1115,7 +1115,12 @@ function renderSnapshots(snapshots, running) {
     remove.addEventListener("click", () => deleteSnapshot(snapshot));
     actionCell.append(remove);
 
-    tr.append(cell(snapshot.name, "path"), tiers, cell(formatTime(snapshot.mtime)), frees, total, actionCell);
+    // From the run history, not the folder: rsync copies the source's
+    // modification time onto it. A snapshot no recorded run wrote has no time.
+    const written = cell(snapshot.written_at ? formatTime(snapshot.written_at) : "—");
+    if (!snapshot.written_at) written.title = "No run in the history wrote this snapshot";
+
+    tr.append(cell(snapshot.name, "path"), tiers, written, frees, total, actionCell);
     host.append(tr);
   }
 }
