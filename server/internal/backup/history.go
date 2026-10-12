@@ -155,6 +155,33 @@ func lastRunFileCount(ctx context.Context, db *sql.DB) (int64, error) {
 	return stats.FilesTotal, nil
 }
 
+// writtenTimes maps each snapshot to when the last successful run that wrote it
+// finished. A snapshot's own folder is no use for this: rsync -a copies the
+// source's modification time onto it, so every snapshot of an unchanged source
+// claims the same moment. A snapshot with no successful run in the history —
+// the history was cleared, or it predates it — is simply absent.
+func writtenTimes(ctx context.Context, db *sql.DB) (map[string]int64, error) {
+	rows, err := db.QueryContext(ctx, `
+        SELECT snapshot, MAX(finished_at) FROM backup_runs
+        WHERE status = ? AND snapshot <> ''
+        GROUP BY snapshot`, StatusSuccess)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	times := map[string]int64{}
+	for rows.Next() {
+		var name string
+		var finished int64
+		if err := rows.Scan(&name, &finished); err != nil {
+			return nil, err
+		}
+		times[name] = finished
+	}
+	return times, rows.Err()
+}
+
 // clearRuns empties the history and reports how many rows went. The snapshots
 // on the disk are untouched: this is the log of what happened, not the backups
 // themselves.
