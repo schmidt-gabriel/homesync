@@ -1,12 +1,17 @@
 package backup
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
+
+	"github.com/schmidt-gabriel/homesync/server/internal/index"
 )
 
 var (
@@ -28,6 +33,11 @@ type SnapshotSize struct {
 	// An unchanged file is one inode linked from every snapshot that has it, and
 	// deleting one of those names frees nothing.
 	Unique int64 `json:"unique"`
+	// Unreadable counts the files and folders the walk could not look at,
+	// which the server cannot when it runs unprivileged over other users'
+	// data. Non-zero means both numbers are a floor, not the size.
+	Unreadable int64 `json:"unreadable,omitempty"`
+	MeasuredAt int64 `json:"measured_at"` // unix milliseconds
 }
 
 // measureSnapshot walks one snapshot and adds up its allocated blocks, not its
@@ -38,15 +48,25 @@ type SnapshotSize struct {
 // writes, with one exception worth knowing: a file hard-linked to another
 // inside the source arrives with two links in the same snapshot and is
 // reported as shared.
+//
+// Anything below the snapshot that cannot be read is counted and stepped over
+// rather than failing the walk: one folder owned by another user used to leave
+// the whole snapshot unmeasured for good.
 func measureSnapshot(dir string) (SnapshotSize, error) {
 	var size SnapshotSize
 	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if path == dir {
+				return err
+			}
+			// For a folder that cannot be listed, returning nil skips it.
+			size.Unreadable++
+			return nil
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return err
+			size.Unreadable++
+			return nil
 		}
 		st, ok := info.Sys().(*syscall.Stat_t)
 		if !ok {
@@ -60,7 +80,54 @@ func measureSnapshot(dir string) (SnapshotSize, error) {
 		}
 		return nil
 	})
+	size.MeasuredAt = time.Now().UnixMilli()
 	return size, err
+}
+
+// sizesToMeasure decides which snapshots to walk, given the ones on the disk
+// (newest first), the sizes already stored, and the snapshots a run or a
+// delete just created or removed.
+//
+// Walking all of them after every change is what this avoids: on a large tree
+// it is many minutes per snapshot. Only the neighbours of a change can have
+// moved, because a snapshot hard-links to the one before it, so the snapshots
+// sharing an inode are always a contiguous run of the list. Creating one takes
+// files that were unique in the one before it and shares them. Removing one
+// can leave a file it shared with a single survivor, and that survivor is the
+// nearest one on either side.
+func sizesToMeasure(current []string, stored map[string]SnapshotSize, touched []string) []string {
+	want := map[string]bool{}
+	for _, name := range current {
+		if _, ok := stored[name]; !ok {
+			want[name] = true
+		}
+	}
+	for _, changed := range touched {
+		var older, newer string
+		for _, name := range current {
+			switch {
+			case name == changed:
+				want[name] = true
+			case name > changed:
+				newer = name // the list is newest first, so the last one wins
+			case older == "":
+				older = name
+			}
+		}
+		for _, name := range []string{older, newer} {
+			if name != "" {
+				want[name] = true
+			}
+		}
+	}
+
+	var names []string
+	for _, name := range current {
+		if want[name] {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // deleteSnapshot removes one snapshot by name. The name comes from a URL, so it
@@ -98,4 +165,28 @@ func removeLatestLink(dir string) error {
 		return err
 	}
 	return os.Remove(path)
+}
+
+// sizesKey is where the measurements live in the index's meta table: a small
+// JSON document keyed by snapshot name, rewritten whole after each walk.
+const sizesKey = "backup_snapshot_sizes"
+
+func loadSizes(ctx context.Context, ix *index.Index) (map[string]SnapshotSize, error) {
+	sizes := map[string]SnapshotSize{}
+	raw, err := ix.GetMeta(ctx, sizesKey, "")
+	if err != nil || raw == "" {
+		return sizes, err
+	}
+	if err := json.Unmarshal([]byte(raw), &sizes); err != nil {
+		return map[string]SnapshotSize{}, fmt.Errorf("stored snapshot sizes are not valid JSON: %w", err)
+	}
+	return sizes, nil
+}
+
+func saveSizes(ctx context.Context, ix *index.Index, sizes map[string]SnapshotSize) error {
+	raw, err := json.Marshal(sizes)
+	if err != nil {
+		return err
+	}
+	return ix.SetMeta(ctx, sizesKey, string(raw))
 }

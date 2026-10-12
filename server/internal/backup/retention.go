@@ -28,8 +28,10 @@ type Snapshot struct {
 	Tiers []string `json:"tiers"`
 	Kept  bool     `json:"kept"`
 	// Size is null until it has been measured, which takes a walk of the
-	// whole snapshot and happens in the background.
-	Size *SnapshotSize `json:"size"`
+	// whole snapshot and happens in the background. Measuring is set while a
+	// walk is queued, and then Size, if present, is the previous measurement.
+	Size      *SnapshotSize `json:"size"`
+	Measuring bool          `json:"measuring,omitempty"`
 }
 
 // ListSnapshots returns the snapshot directories in dir, newest first. The

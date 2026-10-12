@@ -140,11 +140,16 @@ a run removes one left by an older version.
 
 Snapshot sizes are two numbers because hard links make either one misleading
 alone: *total* is everything a snapshot reaches, *unique* (files with one link)
-is what deleting it frees. Measuring walks every snapshot, so the manager
-caches the result, measures in the background, never while a run is going, and
-throws the cache away after every run or delete — both change link counts in
-snapshots other than the one touched. Deleting a snapshot and running a backup
-share one lock, so neither removes a directory the other is using.
+is what deleting it frees. Walking a snapshot of a large tree takes minutes,
+so sizes are stored in the meta table and walked by one background worker,
+never while a run is going and never because the page asked. Only what a change
+can have moved is walked again: a run makes the previous snapshot's unique files
+shared, and a delete can hand its shared files to the nearest survivor on either
+side — snapshots sharing an inode are always a contiguous run of the list.
+The walk steps over what it cannot read and counts it, because the server runs
+unprivileged over other users' data; failing the walk there left the page on
+"measuring…" for good. Deleting a snapshot and running a backup share one lock,
+so neither removes a directory the other is using.
 
 **The progress bar counts files checked against the previous run's total, and
 each half of that was arrived at by discarding something that looked right.**

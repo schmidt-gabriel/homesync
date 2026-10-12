@@ -1086,11 +1086,23 @@ function renderSnapshots(snapshots, running) {
       badge.textContent = "removed by the next run";
       tiers.append(badge);
     }
-    // Null until the server has walked it, which happens in the background
-    // after every run and delete.
+    // Measured in the background and stored, so a size shown here can be the
+    // previous measurement while a newer one is queued. Null only for a
+    // snapshot that has never been walked.
     const measured = snapshot.size;
-    const frees = cell(measured ? formatBytes(measured.unique) : "measuring…", "num");
-    const total = cell(measured ? formatBytes(measured.total) : "", "num");
+    // Some of it could not be read, so both numbers are a floor.
+    const floor = measured?.unreadable ? "≥ " : "";
+    const frees = cell(
+      measured ? floor + formatBytes(measured.unique) : snapshot.measuring ? "measuring…" : "—", "num");
+    const total = cell(measured ? floor + formatBytes(measured.total) : "", "num");
+    if (measured) {
+      const notes = [`measured ${formatTime(measured.measured_at)}`];
+      if (snapshot.measuring) notes.push("being measured again");
+      if (measured.unreadable) {
+        notes.push(`${measured.unreadable.toLocaleString()} file(s) or folder(s) could not be read`);
+      }
+      frees.title = total.title = notes.join("; ");
+    }
 
     const actionCell = document.createElement("td");
     const remove = document.createElement("button");
