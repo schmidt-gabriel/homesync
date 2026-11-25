@@ -263,9 +263,10 @@ func (w *Watcher) apply(ctx context.Context, rel, abs string) error {
 	}
 
 	// Content unchanged despite a touched mtime: do not burn a revision, or
-	// every `touch` would wake every connected machine for nothing.
+	// every `touch` would wake every connected machine for nothing. The new
+	// mtime is still stored, or the quick check above misses next time too.
 	if found && !prev.Deleted && prev.SHA256 == sum && prev.Size == size {
-		return nil
+		return w.ix.RecordMTime(ctx, rel, info.ModTime().UnixMilli())
 	}
 
 	_, err = w.ix.Upsert(ctx, Entry{

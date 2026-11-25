@@ -330,6 +330,18 @@ func (ix *Index) Upsert(ctx context.Context, e Entry) (int64, error) {
 	return rev, err
 }
 
+// RecordMTime stores a new mtime for a live path whose content did not change.
+//
+// It deliberately bypasses write(): no revision is taken and no listener is
+// woken, because nothing a client can see has changed. Without it the
+// size/mtime quick check would miss on every later pass and the file would be
+// hashed again each time.
+func (ix *Index) RecordMTime(ctx context.Context, path string, mtime int64) error {
+	_, err := ix.db.ExecContext(ctx,
+		`UPDATE files SET mtime = ? WHERE path = ? AND deleted = 0`, mtime, path)
+	return err
+}
+
 // MarkDeleted turns a path into a tombstone and returns the new revision.
 // The row is kept so offline clients still learn about the deletion; a separate
 // job prunes tombstones once they are older than any plausible client.
