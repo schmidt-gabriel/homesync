@@ -176,6 +176,9 @@ func (ix *Index) Scan(ctx context.Context, root string, skip SkipFunc, key *cryp
 			// but do not burn a revision, or every `touch` would wake every
 			// client for nothing.
 			if exists && prev.SHA256 == sum && prev.Size == disk.Size {
+				if err := ix.RecordMTime(ctx, path, disk.MTime); err != nil {
+					slog.Warn("cannot record mtime", "path", path, "err", err)
+				}
 				continue
 			}
 		}
